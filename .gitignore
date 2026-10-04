@@ -20,3 +20,6 @@ SYNOLOGY-HANDOFF.md
 RELIABILITY.md
 ics/*
 !ics/.gitkeep
+
+data/
+*.oci.tar

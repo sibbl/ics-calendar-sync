@@ -22,3 +22,6 @@ MIGRATION-HANDOFF.md
 SYNOLOGY-HANDOFF.md
 RELIABILITY.md
 ics/
+
+data/
+*.oci.tar

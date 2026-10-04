@@ -1,0 +1,12 @@
+# Optional protected state, separate from OAuth and input files.
+services:
+  calendar-sync:
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - type: bind
+        source: ${DATA_STATE_DIR:?Set DATA_STATE_DIR to an existing private directory}
+        target: /data
+        read_only: false
+        bind:
+          create_host_path: false

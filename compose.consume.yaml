@@ -1,0 +1,11 @@
+# Optional only for explicitly enabled archive/delete and an immutable producer.
+# Use together with compose.data.yaml; keep default inputs read-only otherwise.
+services:
+  calendar-sync:
+    volumes:
+      - type: bind
+        source: ${ICS_SOURCE_DIR:-./ics}
+        target: /sources
+        read_only: false
+        bind:
+          create_host_path: false

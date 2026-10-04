@@ -1,0 +1,17 @@
+import {it,expect} from 'vitest';
+import {previewSnapshot,validatedWindow} from '../server/snapshot-preview';
+import {parseCalendar} from '../server/calendar';
+import {BASE,MASTER,SOURCE,SID,ics} from './fixtures';
+import type {RemoteEvent} from '../server/google';
+const parsed=()=>parseCalendar(ics([BASE]),SID);
+const empty=()=>parseCalendar(ics([]),SID);
+function target():RemoteEvent {const item=parsed().items[0];return {id:item.key,etag:'synthetic-etag',...structuredClone(item.event!)};}
+const week={authority:'window' as const,window:{start:'2026-03-23',end:'2026-03-30',timezone:'Europe/Berlin'}};
+it('requires explicit window and never infers dates from records',()=>{expect(()=>validatedWindow({authority:'window'})).toThrow();expect(()=>validatedWindow({...week,window:{...week.window,start:'2026-02-30'}})).toThrow();expect(()=>validatedWindow({...week,window:{...week.window,timezone:'Invalid/Synthetic'}})).toThrow();expect(previewSnapshot(empty(),SOURCE,[target()],{authority:'unknown'}).proposedRemovals).toEqual([]);});
+it('uses local date boundaries with exclusive end across DST',()=>{const w=validatedWindow(week)!;expect(w.endMillis-w.startMillis).toBe(167*3600000);});
+it('classifies new, changed and identical stable UID records',()=>{expect(previewSnapshot(parsed(),SOURCE,[],{authority:'unknown'}).added).toBe(1);expect(previewSnapshot(parsed(),SOURCE,[target()],{authority:'unknown'}).unchanged).toBe(1);expect(previewSnapshot(parsed(),SOURCE,[{...target(),summary:'Synthetic drift'}],{authority:'unknown'}).changed).toBe(1);});
+it('proposes owned missing singles within a confirmed week without mutating targets',()=>{const t=target(),before=JSON.stringify(t),result=previewSnapshot(empty(),SOURCE,[t],week);expect(result.proposedRemovals).toEqual([t.id]);expect(result.requiresRemovalApproval).toBe(true);expect(result.warnings.join(' ')).toContain('Leerer Export');expect(JSON.stringify(t)).toBe(before);});
+it('protects outside, boundary-crossing, recurring, unverifiable and foreign records',()=>{const t=target();for(const change of [{start:{date:'2026-03-22'},end:{date:'2026-03-24'}},{start:{date:'2026-03-29'},end:{date:'2026-03-31'}},{start:{date:'2026-03-30'},end:{date:'2026-03-31'}},{etag:undefined},{recurrence:['RRULE:FREQ=WEEKLY']},{extendedProperties:{private:{icsSync:'v1',source:'synthetic-other-source',key:t.id}}}])expect(previewSnapshot(empty(),SOURCE,[{...t,...change} as RemoteEvent],week).proposedRemovals).toEqual([]);});
+it('permits explicit full-snapshot proposals but protects quarantined groups',()=>{const t=target();expect(previewSnapshot(empty(),SOURCE,[t],{authority:'full'}).proposedRemovals).toEqual([t.id]);const p=empty();p.protectedMasterKeys=[t.id];expect(previewSnapshot(p,SOURCE,[t],{authority:'full'}).proposedRemovals).toEqual([]);});
+it('preserves explicit UID cancellation and does not propose it again',()=>{const p=parseCalendar(ics([BASE+'\r\nSTATUS:CANCELLED']),SID);const r=previewSnapshot(p,SOURCE,[target()],week);expect(r.explicitCancellations).toBe(1);expect(r.proposedRemovals).toEqual([]);});
+it('does not remove exceptions or masters crossing a window',()=>{const p=parseCalendar(ics([MASTER]),SID),master={id:p.items[0].key,etag:'synthetic',...p.items[0].event!};expect(previewSnapshot(empty(),SOURCE,[master],week).proposedRemovals).toEqual([]);expect(previewSnapshot(empty(),SOURCE,[{...target(),recurringEventId:'synthetic-parent'}],{authority:'full'}).proposedRemovals).toEqual([]);});

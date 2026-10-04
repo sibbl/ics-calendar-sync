@@ -10,3 +10,5 @@
 - Before migration activation, verify preview-only destination and stop the previous writer. Never operate two writers. Credential handoff requires its separately authorized secure workflow.
 - Run npm run typecheck, npm test and npm run build for implementation changes; run npm run e2e for UI behavior. Existing tests use synthetic data and block external requests. Do not run production probes as tests. Documentation-only changes need factual/link review rather than new mirror tests.
 - Use concise documentation describing supported behavior; do not publish personal deployment paths, host addresses or historical operational evidence.
+
+- Snapshot scope must be explicit; never infer authority from event bounds or missing files. Approval binds byte/config revisions and removal ETags. Keep is default; cleanup requires acknowledged full import, protected versioned /data journal, immutable published-file contract and explicit writable-input configuration. Never enable it on existing inputs without operator approval.

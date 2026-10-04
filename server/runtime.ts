@@ -1,3 +1,7 @@
+import {DataStore,type Approval} from './data-store.js';
+import {cleanupFiles} from './file-cleanup.js';
+import {previewSnapshot} from './snapshot-preview.js';
+import {randomUUID} from 'node:crypto';
 import {opaque} from './calendar.js';
 import {stableJSON} from './event-fingerprint.js';
 import {SourcePlanCache} from './source-plan-cache.js';
@@ -16,8 +20,8 @@ export interface RunLog {event:'sync-start'|'sync-progress'|'sync-complete'|'syn
 export class Runtime {
  readonly uploads=new Map<string,Uint8Array>();readonly statuses:Record<string,Status>={};sources:Source[];
  private queue:Promise<unknown>=Promise.resolve();private due=new Map<string,number>();private timer?:ReturnType<typeof setInterval>;private ticking=false;private automaticJobs=new Map<string,Promise<unknown>>();private watchAgain=new Set<string>();private closing=false;private now:()=>number;private automaticBlockedUntil=0;private permanentFailures=new Map<string,string>();private deferredWatch=new Set<string>();private recoveries=new Map<string,Recovery>();private logger:(event:RunLog)=>void;private rateRetryDue=new Map<string,number>();readonly folderWatch:FolderWatchManager;
- readonly google:GooglePort;private sourceReader=new GoogleSourceReader();private sourcePlans=new SourcePlanCache();
- constructor(readonly config:Config,options:{google?:GooglePort;urlLoader?:typeof fetchSourceURL;watchAdapters?:WatchAdapters;now?:()=>number;logger?:(event:RunLog)=>void}={}){this.logger=options.logger??(event=>console.info(JSON.stringify(event)));this.now=options.now??Date.now;this.sources=structuredClone(config.sources);this.google=options.google??new GoogleClient(config);this.urlLoader=options.urlLoader??fetchSourceURL;this.folderWatch=new FolderWatchManager(config.watchRoot,id=>this.requestAutomatic(id,'watch'),options.watchAdapters);}
+ readonly google:GooglePort;private previews=new Map<string,{token:string;revision:string;signature:string;removals:string[];removalEtags:Record<string,string>;empty:boolean}>();private store:DataStore;private sourceReader=new GoogleSourceReader();private sourcePlans=new SourcePlanCache();
+ constructor(readonly config:Config,options:{google?:GooglePort;urlLoader?:typeof fetchSourceURL;watchAdapters?:WatchAdapters;now?:()=>number;logger?:(event:RunLog)=>void}={}){this.store=new DataStore(config.dataDir);this.logger=options.logger??(event=>console.info(JSON.stringify(event)));this.now=options.now??Date.now;this.sources=structuredClone(config.sources);this.google=options.google??new GoogleClient(config);this.urlLoader=options.urlLoader??fetchSourceURL;this.folderWatch=new FolderWatchManager(config.watchRoot,id=>this.requestAutomatic(id,'watch'),options.watchAdapters);}
  private urlLoader:typeof fetchSourceURL;
  invalidateGoogleSource(calendarId?:string){this.sourceReader.invalidate(calendarId);}
  private async googlePlan(source:Source,calendarId?:string,write=false){
@@ -45,20 +49,29 @@ export class Runtime {
   void job.catch(()=>undefined).finally(()=>{this.automaticJobs.delete(id);const current=this.sources.find(s=>s.id===id);if(current){if(this.signature(current)===signature)this.scheduleAfter(current,clock());else this.due.delete(id);}if(this.watchAgain.delete(id)&&current?.enabled&&current.kind==='folder'&&current.watch)void this.requestAutomatic(id,'watch').catch(()=>undefined);});return job;
  }
 
- async execute(id:string,write=false,trigger?:'watch'|'schedule'){
+ async execute(id:string,write=false,trigger?:'watch'|'schedule',confirmation?:{token:string;emptyConfirmed?:boolean}){
   const operation=async()=>{
-   const source=structuredClone(this.source(id)),calendarId=source.calendarId||this.config.calendarId,signature=this.signature(source);
+   const source=structuredClone(this.source(id)),calendarId=source.calendarId||this.config.calendarId,signature=this.signature(source),stateSignature=opaque('source-state-v1',signature);const sourceUnchanged=()=>!this.closing&&this.signature(this.source(id))===signature;
    if(this.closing)throw new AppError('Verarbeitung beendet.');if(trigger&&this.blocked(source,this.now())){if(trigger==='watch')this.deferredWatch.add(id);return;}if(trigger&&(!source.enabled||source.kind==='upload'||trigger==='watch'&&(source.kind!=='folder'||!source.watch)))return;
-   let plan:Plan|undefined,recovery:Recovery|undefined,progress:SyncProgress|undefined,confirmedEarlier=0,resuming=false,lastLogged=-1;
+   let cleanupCounts:Awaited<ReturnType<typeof cleanupFiles>>|undefined;let plan:Plan|undefined,recovery:Recovery|undefined,progress:SyncProgress|undefined,confirmedEarlier=0,resuming=false,lastLogged=-1;
    const fields=()=>({fetched:plan?.stats.sourceFetched??plan?.stats.components??0,changed:progress?.changed??0,skipped:progress?.skipped??0,written:progress?.written??0,pending:progress?.pending??plan?.items.length??0,confirmedEarlier});
    const log=(event:RunLog['event'],extra:Partial<RunLog>={})=>{try{this.logger({event,sourceIndex:this.sources.findIndex(s=>s.id===id),kind:source.kind,...fields(),...extra});}catch{/* Observability cannot authorize or prevent calendar writes. */}};
    try{
     if(!trigger&&write){this.permanentFailures.delete(id);this.google.resetRateLimits?.([calendarId,...source.sourceCalendarId?[source.sourceCalendarId]:[]]);}
     if(write&&(!this.config.writes||this.config.demo||!calendarId||!this.config.clientId||!this.config.clientSecret||!this.config.refreshToken))throw new AppError('Google-Schreiben benötigt ausdrückliche Freigabe und vollständige OAuth-ENV.');
-    validateSourceGraph(this.sources,this.config.calendarId);if(source.kind==='google')await this.validateSourceCalendar(source.sourceCalendarId!);if(write)await this.validateCalendar(calendarId);
+    if(write&&source.fileHandling&&source.fileHandling!=='keep'){if(!this.config.dataDir)throw new AppError('Bereinigung benötigt DATA_DIR und Datenmount.');const state=await this.store.read(id);cleanupCounts=await cleanupFiles(this.config.watchRoot,source,this.store,state,stateSignature,undefined,{shouldContinue:sourceUnchanged});}validateSourceGraph(this.sources,this.config.calendarId);if(source.kind==='google')await this.validateSourceCalendar(source.sourceCalendarId!);if(write)await this.validateCalendar(calendarId);
     let targetState:RemoteEvent[]|undefined;
     if(source.kind==='google'){const loaded=await this.googlePlan(source,calendarId||undefined,write);plan=loaded.plan;targetState=loaded.targetState;}
-    else{plan=await loadSource(source,this.config.watchRoot,this.uploads,this.urlLoader,calendarId||undefined,this.sourcePlans);if(write&&this.google.listManagedEvents){targetState=await this.google.listManagedEvents(calendarId,source.id);plan.stats.targetFetched=targetState.length;}}
+    else{plan=await loadSource(source,this.config.watchRoot,this.uploads,this.urlLoader,calendarId||undefined,this.sourcePlans);if((write||source.folderMode==='snapshot')&&this.google.listManagedEvents){targetState=await this.google.listManagedEvents(calendarId,source.id);plan.stats.targetFetched=targetState.length;}}
+    if(source.folderMode==='snapshot'&&!plan.inputMissing){
+     if(!targetState)throw new AppError('Snapshot-Vorschau benötigt vollständiges Zielinventar.');const preview=previewSnapshot(plan,{...source,calendarId},targetState,source.snapshotScope??{authority:'unknown'});plan.snapshotPreview=preview;
+     if(!write){const previous=this.previews.get(id),token=previous&&previous.revision===plan.sourceRevision&&previous.signature===stateSignature&&stableJSON(previous.removalEtags)===stableJSON(preview.removalEtags)?previous.token:randomUUID();this.previews.set(id,{token,revision:plan.sourceRevision!,signature:stateSignature,removals:preview.proposedRemovals,removalEtags:preview.removalEtags,empty:!plan.stats.components});preview.token=token;}
+     else{let approval:Approval|undefined=(await this.store.read(id)).approval;const offered=this.previews.get(id);
+      if(confirmation){if(!offered||offered.token!==confirmation.token||offered.revision!==plan.sourceRevision||offered.signature!==stateSignature||offered.empty&&!confirmation.emptyConfirmed)throw new AppError('Snapshot geändert oder leerer Export nicht ausdrücklich bestätigt; Vorschau erneuern.');if(preview.proposedRemovals.some(key=>!offered.removals.includes(key)||offered.removalEtags[key]!==preview.removalEtags[key]))throw new AppError('Neue Entfernungsvorschläge; Vorschau erneuern.');approval={revision:plan.sourceRevision!,signature:stateSignature,removals:offered.removals,removalEtags:offered.removalEtags,emptyConfirmed:!!confirmation.emptyConfirmed};const state=await this.store.read(id);state.approval=approval;await this.store.write(state);this.previews.delete(id);}
+      if(!approval||approval.revision!==plan.sourceRevision||approval.signature!==stateSignature||!plan.stats.components&&!approval.emptyConfirmed)throw new AppError('Neue Snapshotversion benötigt bestätigte Vorschau und DATA_DIR.');
+      if(preview.proposedRemovals.some(key=>approval!.removals.includes(key)&&approval!.removalEtags[key]!==preview.removalEtags[key]))throw new AppError('Zielentfernung nach Vorschau geändert; neue Bestätigung erforderlich.');const approved=new Set(approval.removals);for(const key of preview.proposedRemovals){if(approved.has(key))plan.items.push({key,cancel:true});}plan.stats.reconciledCancellations=preview.proposedRemovals.filter(k=>approved.has(k)).length;
+     }
+    }
     if(!write){this.statuses[id]={ok:true,at:new Date(this.now()).toISOString(),mode:'preview',stats:plan.stats};return plan;}
     const key=opaque('recovery-v2',signature,plan.sourceRevision??'',stableJSON(plan.items.map(i=>[i.key,!!i.parent,i.cancel,i.event?.extendedProperties.private.desiredHash??'',i.original??null]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))));
     const previous=this.recoveries.get(id);resuming=previous?.key===key;recovery=resuming?previous!:{key,completed:new Set(),uncertain:new Set(),confirmedWrites:0};confirmedEarlier=recovery.confirmedWrites;
@@ -70,6 +83,7 @@ export class Runtime {
      this.statuses[id]={ok:true,at:new Date(this.now()).toISOString(),mode:'sync',running:true,stats:plan!.stats,progress:{...fields(),resuming}};
      if(next.processed-lastLogged>=100){log('sync-progress');lastLogged=next.processed;}
     }});
+    if(!sourceUnchanged())throw new AppError('Konfiguration geändert; nach bestätigten Writes vor Bereinigung gestoppt.');if(source.fileHandling&&source.fileHandling!=='keep'&&!plan.inputMissing){const state=await this.store.read(id);const done=await cleanupFiles(this.config.watchRoot,source,this.store,state,stateSignature,plan.inputFiles,{shouldContinue:sourceUnchanged});cleanupCounts={filesArchived:(cleanupCounts?.filesArchived??0)+done.filesArchived,filesDeleted:(cleanupCounts?.filesDeleted??0)+done.filesDeleted,filesRetained:(cleanupCounts?.filesRetained??0)+done.filesRetained};}if(cleanupCounts)Object.assign(plan.stats,cleanupCounts);
     this.google.successfulRun?.([calendarId,...source.sourceCalendarId?[source.sourceCalendarId]:[]]);this.recoveries.delete(id);this.rateRetryDue.delete(id);this.permanentFailures.delete(id);
     this.statuses[id]={ok:true,at:new Date(this.now()).toISOString(),mode:'sync',stats:plan.stats,sync:result,progress:{...fields(),resuming}};log('sync-complete');return result;
    }catch(error){
@@ -84,7 +98,7 @@ export class Runtime {
   };const current=this.queue.then(operation);this.queue=current.catch(()=>undefined);return current;
  }
 
- resetDue(id:string){this.due.delete(id);this.permanentFailures.delete(id);this.recoveries.delete(id);this.rateRetryDue.delete(id);const source=this.source(id);this.google.resetRateLimits?.([source.calendarId||this.config.calendarId,...source.sourceCalendarId?[source.sourceCalendarId]:[]]);}
+ resetDue(id:string){this.previews.delete(id);this.due.delete(id);this.permanentFailures.delete(id);this.recoveries.delete(id);this.rateRetryDue.delete(id);const source=this.source(id);this.google.resetRateLimits?.([source.calendarId||this.config.calendarId,...source.sourceCalendarId?[source.sourceCalendarId]:[]]);}
  async tick(now?:number){if(this.ticking)return;this.ticking=true;const at=now??this.now(),clock=now===undefined?this.now:()=>at;try{
   await this.folderWatch.tick(this.sources,at);
   for(const source of [...this.sources]){if(!source.enabled||source.kind==='upload')continue;if(this.blocked(source,at))continue;
@@ -96,5 +110,5 @@ export class Runtime {
  }finally{this.ticking=false;}}
 
  start(){if(!this.timer){this.timer=setInterval(()=>{void this.folderWatch.tick(this.sources).catch(()=>undefined);void this.tick();},1000);void this.tick();}}
- async close(){this.closing=true;this.watchAgain.clear();this.deferredWatch.clear();this.google.close?.();if(this.timer)clearInterval(this.timer);this.timer=undefined;await this.folderWatch.close();await this.queue;this.uploads.clear();this.sourcePlans.clear();this.recoveries.clear();this.rateRetryDue.clear();this.sourceReader.invalidate();}
+ async close(){this.closing=true;this.watchAgain.clear();this.deferredWatch.clear();this.google.close?.();if(this.timer)clearInterval(this.timer);this.timer=undefined;await this.folderWatch.close();await this.queue;this.uploads.clear();this.previews.clear();this.sourcePlans.clear();this.recoveries.clear();this.rateRetryDue.clear();this.sourceReader.invalidate();}
 }
