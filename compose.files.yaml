@@ -1,0 +1,7 @@
+services:
+  calendar-sync:
+    volumes:
+      - type: bind
+        source: ${ICS_SOURCE_DIR:-./ics}
+        target: /sources
+        read_only: true

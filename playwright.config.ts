@@ -1,0 +1,2 @@
+import{defineConfig,devices}from'@playwright/test';
+export default defineConfig({testDir:'./e2e',fullyParallel:false,workers:1,timeout:20000,retries:0,use:{baseURL:'http://127.0.0.1:18082',trace:'retain-on-failure'},projects:[{name:'chromium',use:{...devices['Desktop Chrome']}}],reporter:[['list'],['json',{outputFile:'reports/playwright.json'}]],webServer:{command:'node e2e/demo-server.mjs',url:'http://127.0.0.1:18082/healthz',timeout:10000,reuseExistingServer:false}});

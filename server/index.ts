@@ -1,0 +1,6 @@
+import {serve} from '@hono/node-server';
+import {serveStatic} from '@hono/node-server/serve-static';
+import {createApp} from './app.js';
+import {configFromEnv} from './config.js';
+export function start(){const config=configFromEnv();if(!Number.isInteger(config.port)||config.port<1||config.port>65535)throw Error('PORT ungültig.');const {app,runtime}=createApp(config);app.get('/assets/*',serveStatic({root:'./dist'}));app.get('*',serveStatic({path:'./dist/index.html'}));const server=serve({fetch:app.fetch,hostname:config.host,port:config.port});server.on('listening',()=>{runtime.start();console.log('ICS-Oberfläche lokal bereit.');});server.on('error',(error:NodeJS.ErrnoException)=>{console.error('Lokaler Serverstart fehlgeschlagen ('+(error.code??'UNKNOWN')+'); Socket-/Port-Freigabe prüfen.');process.exitCode=1;});for(const signal of ['SIGINT','SIGTERM']as const)process.once(signal,()=>{server.close(()=>void runtime.close());});return server;}
+if(import.meta.url===new URL(process.argv[1]??'', 'file:').href){try{if(process.argv.length>2)throw Error('Unbekannte Startoption.');start();}catch{console.error('Startkonfiguration ungültig; keine Quelldetails ausgegeben.');process.exitCode=1;}}

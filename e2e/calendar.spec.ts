@@ -1,0 +1,77 @@
+import{test,expect,type Page}from'@playwright/test';
+async function login(page:Page){await page.getByLabel('Admin-Token',{exact:true}).fill('synthetic-demo-only');await page.getByRole('button',{name:'Öffnen',exact:true}).click();}
+import{SYNTHETIC_ICS}from'../server/fixtures';
+test('demo UI previews anonymous times and blocks Google writes',async({page})=>{await page.goto('/');await login(page);await expect(page.getByLabel('Quelle',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'Synchronisieren'})).toBeDisabled();await page.getByRole('button',{name:'Vorschau',exact:true}).click();await expect(page.getByRole('table',{name:'Anonymisierte Termine'})).toBeVisible();await expect(page.getByText('Serienausnahme',{exact:true})).toBeVisible();await expect(page.getByText('Synthetic private topic',{exact:true})).toHaveCount(0);});
+test('synthetic upload renders preview and exports ENV without OAuth',async({page})=>{await page.goto('/');await login(page);await page.getByLabel('Upload für Synthetischer Kalender').setInputFiles({name:'synthetic.ics',mimeType:'text/calendar',buffer:Buffer.from(SYNTHETIC_ICS)});await expect(page.getByRole('table',{name:'Anonymisierte Termine'})).toBeVisible();await page.getByRole('button',{name:'ENV exportieren'}).click();await expect(page.getByLabel('ENV-Konfiguration')).toHaveValue(/SOURCES_JSON=/);});
+test('compact settings preserve rules and work on mobile',async({page})=>{
+ await page.goto('/');await login(page);
+ await expect(page.getByLabel('Quelle',{exact:true})).toBeVisible();
+ await expect(page.getByLabel('Titel ausschließen (RegEx)')).toHaveCount(0);
+ await page.getByRole('button',{name:'Einstellungen',exact:true}).click();
+ await expect(page.getByLabel('Titel ausschließen (RegEx)')).toHaveValue('^Mittagspause$');
+ await expect(page.getByLabel('Automatisch prüfen',{exact:true})).toBeDisabled();
+ await page.getByLabel('Name',{exact:true}).fill('Synthetischer Kalender 2');
+ await page.getByRole('button',{name:'Speichern',exact:true}).click();
+ await expect(page.getByLabel('Titel ausschließen (RegEx)')).toHaveCount(0);
+ await expect(page.getByLabel('Quelle',{exact:true})).toContainText('Synthetischer Kalender 2');
+ await page.getByRole('button',{name:'Vorschau',exact:true}).click();
+ await expect(page.getByRole('table',{name:'Anonymisierte Termine'})).toBeVisible();
+ await page.screenshot({path:'reports/ui-minimal-desktop.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+ await page.screenshot({path:'reports/ui-minimal-mobile.png',fullPage:true});
+});
+test.beforeEach(async({context})=>{await context.route('**/*',route=>{const url=new URL(route.request().url());return url.origin==='http://127.0.0.1:18082'?route.continue():route.abort();});});
+
+test('info tooltips work with keyboard and touch and preserve settings',async({page,browser})=>{
+ await page.goto('/');await login(page);await page.getByRole('button',{name:'Einstellungen',exact:true}).click();
+ const interval=page.getByRole('button',{name:'Info: Intervall (Sekunden)',exact:true});await interval.focus();await expect(page.getByRole('tooltip')).toContainText('Cron-Ausdruck hat Vorrang');await page.keyboard.press('Escape');await expect(page.getByRole('tooltip')).toHaveCount(0);
+ await page.getByLabel('Intervall (Sekunden)',{exact:true}).focus();
+ await page.getByRole('button',{name:'Info: Busy-Regel',exact:true}).click();await expect(page.getByRole('tooltip')).toContainText('FREE und TENTATIVE nicht');
+ const touchContext=await browser.newContext({viewport:{width:390,height:844},hasTouch:true});
+ try {
+  await touchContext.route('**/*',route=>new URL(route.request().url()).origin==='http://127.0.0.1:18082'?route.continue():route.abort());
+  const touchPage=await touchContext.newPage();await touchPage.goto('http://127.0.0.1:18082/');
+  await login(touchPage);await touchPage.getByRole('button',{name:'Einstellungen',exact:true}).tap();
+  await touchPage.getByRole('button',{name:'Info: Automatisch prüfen',exact:true}).tap();await expect(touchPage.getByRole('tooltip')).toContainText('automatischer Sync');
+  const bounds=await touchPage.getByRole('tooltip').boundingBox();expect(bounds?.x).toBeGreaterThanOrEqual(0);expect((bounds?.x??0)+(bounds?.width??0)).toBeLessThanOrEqual(390);
+  await touchPage.screenshot({path:'reports/ui-tooltip-mobile.png',fullPage:true});
+  await touchPage.getByLabel('Name',{exact:true}).tap();await expect(touchPage.getByRole('tooltip')).toHaveCount(0);await expect(touchPage.getByLabel('Intervall (Sekunden)',{exact:true})).toHaveValue('300');await expect(touchPage.getByLabel('Automatisch prüfen',{exact:true})).not.toBeChecked();
+ }finally{await touchContext.close();}
+});
+
+test('saved admin token logs in automatically and invalid token has no retry loop',async({page})=>{
+ const key='ics-google-calendar-sync.admin-token.v1';await page.goto('/');await expect(page.getByRole('button',{name:'Demo',exact:true})).toHaveCount(0);await login(page);await expect(page.getByLabel('Quelle',{exact:true})).toBeVisible();
+ await page.reload();await expect(page.getByLabel('Quelle',{exact:true})).toBeVisible();await expect(page.getByLabel('Admin-Token',{exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'Abmelden',exact:true}).click();expect(await page.evaluate(k=>localStorage.getItem(k),key)).toBeNull();
+ await page.getByLabel('Admin-Token',{exact:true}).fill('synthetic-invalid');await page.reload();await expect(page.getByRole('alert')).toBeVisible();await expect(page.getByLabel('Admin-Token',{exact:true})).toHaveAttribute('type','password');expect(await page.evaluate(k=>localStorage.getItem(k),key)).toBeNull();
+ await page.getByLabel('Admin-Token',{exact:true}).fill('');await page.reload();await expect(page.getByLabel('Admin-Token',{exact:true})).toHaveValue('');
+});
+
+test('per-source calendar selection and downloadable ENV work on mobile without Google writes',async({page})=>{
+ await page.setViewportSize({width:390,height:844});await page.goto('/');await login(page);await page.getByRole('button',{name:'Einstellungen',exact:true}).click();await page.getByRole('button',{name:'Kalender laden',exact:true}).click();
+ const select=page.getByLabel('Zielkalender dieser Quelle',{exact:true});await expect(select.locator('option[value="synthetic-readonly"]')).toHaveAttribute('disabled','');await select.selectOption('synthetic-target-a');await page.getByRole('button',{name:'Speichern',exact:true}).click();await expect(page.getByRole('button',{name:'Synchronisieren'})).toBeDisabled();await page.getByRole('button',{name:'ENV exportieren'}).click();await expect(page.getByLabel('ENV-Konfiguration')).toHaveValue(/"calendarId":"synthetic-target-a"/);
+ const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Herunterladen'}).click();const download=await pending;expect(download.suggestedFilename()).toBe('ics-sync-config.env');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+});
+
+test('Google source offers readonly input, exports identity and previews anonymous fixture',async({page})=>{
+ await page.goto('/');await login(page);await page.getByRole('button',{name:'Quelle hinzufügen'}).click();await page.getByRole('button',{name:'Kalender laden',exact:true}).click();await page.getByLabel('Name',{exact:true}).fill('Synthetic Google');await page.getByLabel('Typ',{exact:true}).selectOption('google');
+ const input=page.getByLabel('Google-Quellkalender',{exact:true});await expect(input.locator('option[value="synthetic-readonly"]')).not.toBeDisabled();await input.selectOption('synthetic-readonly');await page.getByLabel('Zielkalender dieser Quelle',{exact:true}).selectOption('synthetic-target-a');await expect(page.getByLabel('Automatisch prüfen',{exact:true})).not.toBeChecked();await page.getByRole('button',{name:'Speichern',exact:true}).click();await page.getByRole('button',{name:'Vorschau',exact:true}).click();await expect(page.getByRole('table')).toContainText('Termin');await expect(page.getByText('PRIVATE Google fixture',{exact:true})).toHaveCount(0);await expect(page.getByRole('button',{name:'Synchronisieren'})).toBeDisabled();await page.getByRole('button',{name:'ENV exportieren'}).click();await expect(page.getByLabel('ENV-Konfiguration')).toHaveValue(/"sourceCalendarId":"synthetic-readonly"/);await page.screenshot({path:'reports/google-source-desktop.png',fullPage:true});await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);await page.screenshot({path:'reports/google-source-mobile.png',fullPage:true});
+});
+
+test('folder Watch is opt-in, exported, and paused for disabled sources',async({page})=>{await page.goto('/');await login(page);await page.getByRole('button',{name:'Quelle hinzufügen'}).click();await page.getByLabel('Name',{exact:true}).fill('Synthetic folder');await page.getByLabel('Typ',{exact:true}).selectOption('folder');const watch=page.getByLabel('Ordneränderungen beobachten',{exact:true});await expect(watch).not.toBeChecked();await watch.check();await page.getByRole('button',{name:'Speichern',exact:true}).click();await expect(page.getByText('Dateibeobachtung pausiert',{exact:true})).toBeVisible();await page.getByRole('button',{name:'ENV exportieren'}).click();await expect(page.getByLabel('ENV-Konfiguration')).toHaveValue(/"watch":true/);await page.getByRole('button',{name:'Einstellungen',exact:true}).click();await expect(page.getByLabel('Ordneränderungen beobachten',{exact:true})).toBeChecked();await expect(page.getByLabel('Automatisch prüfen',{exact:true})).not.toBeChecked();await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);await page.screenshot({path:'reports/folder-watch-mobile.png',fullPage:true});});
+
+test('location opt-in and compact known count render consistently without unknown labels',async({page})=>{await page.goto('/');await login(page);await page.getByRole('button',{name:'Quelle hinzufügen'}).click();await page.getByLabel('Name',{exact:true}).fill('Synthetic privacy');await page.getByRole('button',{name:'Speichern',exact:true}).click();const fixture='BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:synthetic-private\r\nDTSTART:20261005T100000Z\r\nDTEND:20261005T110000Z\r\nSUMMARY:PRIVATE title\r\nLOCATION:Synthetic room\r\nATTENDEE;PARTSTAT=ACCEPTED:urn:a\r\nATTENDEE;PARTSTAT=ACCEPTED:urn:b\r\nATTENDEE;PARTSTAT=ACCEPTED:urn:c\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n';await page.getByLabel('Upload für Synthetic privacy').setInputFiles({name:'synthetic.ics',mimeType:'text/calendar',buffer:Buffer.from(fixture)});await expect(page.getByRole('table')).not.toContainText('Synthetic room');await page.getByRole('button',{name:'Einstellungen',exact:true}).click();await expect(page.getByLabel('Ort übernehmen',{exact:true})).not.toBeChecked();await page.getByLabel('Ort übernehmen',{exact:true}).check();await page.getByLabel('Zusagenzahl',{exact:true}).check();await page.getByRole('button',{name:'Speichern',exact:true}).click();await page.getByRole('button',{name:'Vorschau',exact:true}).click();await expect(page.getByRole('table')).toContainText('Termin · 3 👤');await expect(page.getByRole('table')).toContainText('Synthetic room');await expect(page.getByRole('table')).not.toContainText('Zusagen');await page.getByRole('button',{name:'ENV exportieren'}).click();await expect(page.getByLabel('ENV-Konfiguration')).toHaveValue(/"includeLocation":true/);await page.screenshot({path:'reports/privacy-rendering-desktop.png',fullPage:true});});
+
+test('ordered transforms filter original location, render preview and export on mobile',async({page})=>{
+ await page.goto('/');await login(page);await page.getByRole('button',{name:'Quelle hinzufügen'}).click();await page.getByLabel('Name',{exact:true}).fill('Synthetic transforms');await page.getByRole('button',{name:'Speichern',exact:true}).click();
+ const fixture='BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:synthetic-transform\r\nDTSTART:20261005T100000Z\r\nDTEND:20261005T110000Z\r\nSUMMARY:PRIVATE topic\r\nLOCATION:Berlin Raum 7\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n';await page.getByLabel('Upload für Synthetic transforms').setInputFiles({name:'synthetic.ics',mimeType:'text/calendar',buffer:Buffer.from(fixture)});
+ await page.getByRole('button',{name:'Einstellungen',exact:true}).click();await page.getByLabel('Ort übernehmen',{exact:true}).check();await page.getByLabel('Ort einschließen (RegEx)',{exact:true}).fill('Berlin');await page.getByLabel('Ort ausschließen (RegEx)',{exact:true}).fill('Paris');
+ await page.getByRole('button',{name:'Transform hinzufügen'}).click();await page.getByLabel('Transform 1 Muster',{exact:true}).fill('PRIVATE');await page.getByLabel('Transform 1 Ersetzung',{exact:true}).fill('Public');
+ await page.getByRole('button',{name:'Transform hinzufügen'}).click();await page.getByLabel('Transform 2 Feld',{exact:true}).selectOption('location');await page.getByLabel('Transform 2 Muster',{exact:true}).fill('Berlin');await page.getByLabel('Transform 2 Ersetzung',{exact:true}).fill('Remote');await page.getByRole('button',{name:'Nach oben',exact:true}).nth(1).click();
+ await expect(page.getByLabel('Transform 1 Feld',{exact:true})).toHaveValue('location');await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);await page.screenshot({path:'reports/text-rules-mobile.png',fullPage:true});
+ await page.getByRole('button',{name:'Speichern',exact:true}).click();await page.getByRole('button',{name:'Vorschau',exact:true}).click();await expect(page.getByRole('table')).toContainText('Remote Raum 7');await expect(page.getByRole('table')).toContainText('Termin');await expect(page.getByRole('table')).not.toContainText('PRIVATE');await expect(page.getByRole('table')).not.toContainText('Public');
+ await page.getByRole('button',{name:'ENV exportieren'}).click();await expect(page.getByLabel('ENV-Konfiguration')).toHaveValue(/"transforms":\[\{"field":"location"/);await expect(page.getByRole('button',{name:'Synchronisieren'})).toBeDisabled();
+});
+
+test('count-only recovery status renders on mobile without exposing fixture content',async({page})=>{await page.route('**/api/state',async route=>{const response=await route.fetch(),state=await response.json(),id=state.sources[0].id;state.statuses[id]={ok:false,at:'2026-10-04T12:00:00Z',mode:'sync',error:'Google-Rate-Limit',retryAt:'2026-10-04T12:10:00Z',automaticPaused:true,progress:{fetched:42,changed:2,skipped:39,written:1,pending:2,confirmedEarlier:1,resuming:true}};await route.fulfill({response,json:state});});await page.setViewportSize({width:390,height:844});await page.goto('/');await login(page);await expect(page.getByText(/42 abgerufen · 2 Änderungen · 39 unverändert · 1 geschrieben · 2 offen · Wiederaufnahme/)).toBeVisible();await expect(page.getByText(/Rate-Limit-Pause bis/)).toBeVisible();await expect(page.getByText(/Automatik pausiert/)).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);await page.screenshot({path:'reports/recovery-status-mobile.png',fullPage:true});});

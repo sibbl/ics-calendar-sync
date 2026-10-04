@@ -1,0 +1,14 @@
+import{serve}from'@hono/node-server';
+import{serveStatic}from'@hono/node-server/serve-static';
+import{Runtime}from'../dist-server/server/runtime.js';
+import{createApp}from'../dist-server/server/app.js';
+import{demoConfig,DEMO_ID,SYNTHETIC_ICS}from'../dist-server/server/fixtures.js';
+const config={...demoConfig(),port:18082,host:'127.0.0.1',clientId:'synthetic',clientSecret:'synthetic',refreshToken:'synthetic'};
+const fixtureGoogle={listOwnedMasters:async()=>[],readEvents:async()=>({items:[{id:"synthetic-google-event",summary:"PRIVATE Google fixture",start:{date:"2026-10-05"},end:{date:"2026-10-06"}}],nextSyncToken:"synthetic-cursor"}),get:async()=>null,instances:async()=>[],write:async()=>{throw Error('Writes forbidden in browser fixture');},listCalendars:async()=>[{id:'synthetic-target-a',summary:'Synthetic writable',accessRole:'owner',primary:true,writable:true},{id:'synthetic-readonly',summary:'Synthetic readonly',accessRole:'reader',primary:false,writable:false}]};
+const {app,runtime}=createApp(config,new Runtime(config,{google:fixtureGoogle}));
+runtime.uploads.set(DEMO_ID,new TextEncoder().encode(SYNTHETIC_ICS));
+app.get('/assets/*',serveStatic({root:'./dist'}));
+app.get('*',serveStatic({path:'./dist/index.html'}));
+const server=serve({fetch:app.fetch,hostname:config.host,port:config.port});
+server.on('error',()=>{console.error('Isolierter Demo-Server nicht verfügbar.');process.exitCode=1;});
+for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>server.close(()=>void runtime.close()));

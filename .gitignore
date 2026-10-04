@@ -1,0 +1,22 @@
+node_modules/
+dist/
+dist-server/
+.env
+.env.*
+.local/
+!.env.example
+reports/
+test-results/
+playwright-report/
+*.ics
+!example-sources/synthetic.ics
+secrets/
+
+# Local deployment history and personal migration handoffs
+.DS_Store
+HANDOFF.md
+MIGRATION-HANDOFF.md
+SYNOLOGY-HANDOFF.md
+RELIABILITY.md
+ics/*
+!ics/.gitkeep

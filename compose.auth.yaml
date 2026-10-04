@@ -1,0 +1,16 @@
+# Optional: isolated writable token state. Existing ENV-based setup remains valid.
+services:
+  calendar-sync:
+    user: "${APP_UID:?Set the host file owner UID}:${APP_GID:?Set the host file owner GID}"
+    environment:
+      AUTH_FILE: /auth/auth.json
+      GOOGLE_CLIENT_ID: ""
+      GOOGLE_CLIENT_SECRET: ""
+      GOOGLE_REFRESH_TOKEN: ""
+    volumes:
+      - type: bind
+        source: ${AUTH_STATE_DIR:-./.local/auth-store}
+        target: /auth
+        read_only: false
+        bind:
+          create_host_path: false

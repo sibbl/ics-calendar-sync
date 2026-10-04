@@ -1,0 +1,10 @@
+import {it,expect} from 'vitest';
+import {RE2} from 're2-wasm';
+import {expression,compileTextRules} from '../server/text-rules';
+import {parseCalendar} from '../server/calendar';
+import {rulesSchema} from '../shared/contracts';
+import {ics,BASE,SID} from './fixtures';
+it('reuses equivalent flags and resets global state',()=>{const first=expression('synthetic','giu');first.test('synthetic');expect(first.lastIndex).toBeGreaterThan(0);expect(expression('synthetic','uig')).toBe(first);expect(first.lastIndex).toBe(0);});
+it('releases evicted native patterns through sustained configuration churn',()=>{for(let i=0;i<20000;i++){const r=expression('^synthetic-'+i+'$','iu');expect(r.test('synthetic-'+i)).toBe(true);}expect(parseCalendar(ics([BASE]),SID).items[0].event?.summary).toBe('Termin');},30000);
+it('releases invalid native patterns and preserves capture substitutions',()=>{for(let i=0;i<15000;i++)expect(()=>new RE2('[','iu')).toThrow(SyntaxError);const rules=compileTextRules(rulesSchema.parse({transforms:[{field:'title',pattern:'(?<name>synthetic)',flags:'u',replacement:'$<name> $1 $$'}]}));expect(rules.transform('synthetic','').title).toBe('synthetic synthetic $');},30000);
+it('survives repeated source-group parsing with unchanged title filtering',()=>{const data=ics([BASE]);for(let i=0;i<7000;i++){const p=parseCalendar(data,SID,{excludeRegex:'^PRIVATE synthetic title$'});expect(p.items[0].cancel).toBe(true);}expect(parseCalendar(data,SID).items[0].event?.summary).toBe('Termin');},30000);
