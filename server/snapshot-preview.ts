@@ -14,6 +14,12 @@ export function validatedWindow(scope:SnapshotScope){
  return {startMillis:start.toMillis(),endMillis:end.toMillis(),...w};
 }
 function instant(value:EventTime|undefined,timezone:string){if(!value)return NaN;const date=value.date?DateTime.fromISO(value.date,{zone:timezone}):DateTime.fromISO(value.dateTime!,{setZone:true});return date.isValid?date.toMillis():NaN;}
+export function allowsSnapshotCancellation(current:RemoteEvent,scope:SnapshotScope){
+ if(scope.authority==='full')return !current.recurringEventId;
+ const window=validatedWindow(scope);if(!window||current.recurringEventId||current.recurrence?.length)return false;
+ const start=instant(current.start,window.timezone),end=instant(current.end,window.timezone);
+ return Number.isFinite(start)&&Number.isFinite(end)&&start<end&&start>=window.startMillis&&end<=window.endMillis;
+}
 // Pure preview: no filesystem operations, API calls, mutation or inferred authority.
 export function previewSnapshot(plan:Plan,source:Source,target:RemoteEvent[],scope:SnapshotScope):SnapshotPreview {
  const window=validatedWindow(scope),marked=target.filter(e=>{const p=e.extendedProperties?.private;return p?.icsSync==='v1'&&p.source===source.id&&!!p.key&&(!source.calendarId||p.calendar===source.calendarId)&&!p.origin;}),masterIds=new Set(marked.filter(e=>!e.recurringEventId&&e.extendedProperties!.private!.key===e.id).map(e=>e.id)),owned=marked.filter(e=>e.recurringEventId?masterIds.has(e.recurringEventId):masterIds.has(e.id));

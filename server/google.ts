@@ -1,3 +1,4 @@
+import {allowsSnapshotCancellation} from './snapshot-preview.js';
 import {GoogleRequestGate,isRateLimit,type RateOptions} from './google-rate-limit.js';
 import {sameManagedEvent} from './event-equivalence.js';
 import {GoogleRequestError,googleRequestError} from './google-request-error.js';
@@ -135,7 +136,7 @@ export async function syncPlan(plan:Plan,source:Source,google:GooglePort,options
     // A changing cached target is refreshed before mutation; If-Match retains
     // protection if another writer edits it after this final read.
     if(current&&known.has(item.key)){current=await google.get(item.key);validate(current,item);if(identical()){parents.set(item.key,current!);result.unchanged++;complete(item.key);continue;}}
-    if(item.cancel){if(current){changed++;if(!await trackedWrite('PATCH',item.key,{status:'cancelled'},current.etag))throw new AppError('Absageziel verschwunden; Lauf wiederholen.');result.cancelled++;}else result.absentCancelNoop++;complete(item.key);continue;}
+    if(item.cancel){if(current){if(item.approvedCancelEtag&&current.etag!==item.approvedCancelEtag||item.approvedCancelScope&&!allowsSnapshotCancellation(current,item.approvedCancelScope))throw new AppError('Absageziel nach bestätigter Vorschau geändert; keine Entfernung oder Bereinigung.');changed++;if(!await trackedWrite('PATCH',item.key,{status:'cancelled'},item.approvedCancelEtag??current.etag))throw new AppError('Absageziel verschwunden; Lauf wiederholen.');result.cancelled++;}else result.absentCancelNoop++;complete(item.key);continue;}
     changed++;let updated=current?await update(current,item):await trackedWrite('POST',undefined,{id:item.key,...item.event});
     if(updated?.conflict){current=await google.get(item.key);validate(current,item);if(!current)throw new AppError('Zielkonflikt nicht auflösbar.');if(sameManagedEvent(current,item.event!)){parents.set(item.key,current);result.unchanged++;complete(item.key);continue;}updated=await update(current,item);}
     if(!updated)throw new AppError('Ziel während des Abgleichs verschwunden.');parents.set(item.key,updated);writtenParents.add(item.key);result.upserted++;complete(item.key);

@@ -47,7 +47,7 @@ GitHub Actions checks code/tests/UI, then publishes `ghcr.io/<owner>/<repository
 
 `main` and `latest` follow successful main builds; Git tags retain their names. Every build also receives `sha-<full-commit>`, OCI revision/source labels and a digest recorded in its job summary. For deployments, prefer `ghcr.io/<owner>/<repository>@sha256:<verified-digest>` rather than a moving tag. Keep release artifacts private until their exact layers, configuration and remaining attestations pass privacy review. Public images can then be pulled without a registry credential; if an image is private, registry access requires separately owner-approved setup. Do not create or deploy a PAT automatically. This workflow never deploys to a host or enables calendar writes.
 
-Release privacy: BuildKit provenance and automatic build-record uploads are disabled because GitHub push-event metadata can include personal email addresses. SBOM output remains enabled and must be reviewed together with exact image layers/config before public publication. A clean source commit alone does not clear older image attestations.
+Release privacy: BuildKit provenance and automatic build-record uploads are disabled because GitHub push-event metadata can include personal email addresses. Publishing invokes Buildx directly with an isolated environment and prints only the verified image digest, because action metadata logging can expose the same event payload even when attestations are disabled. SBOM output remains enabled and must be reviewed together with exact image layers/config and full CI logs before public publication. A clean source commit alone does not clear older image attestations.
 
 ## Weekly exports
 
