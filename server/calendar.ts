@@ -1,3 +1,4 @@
+import {clipInstant} from './clip-window.js';
 import {stampFingerprint} from './event-fingerprint.js';
 import {compileTextRules,expression} from './text-rules.js';
 import {anonymousTitle} from './event-title.js';
@@ -58,7 +59,7 @@ function duration(raw:string,dateOnly=false){const match=/^P(?:(\d+)W|(?:(\d+)D)
 export function parseCalendar(data:Uint8Array,sourceId:string,inputRules:Partial<Rules>={},calendarId?:string):Plan{
  try{
  const rules=rulesSchema.parse(inputRules);const textRules=compileTextRules(rules);if(rules.excludeRegex&&!safeRegex(rules.excludeRegex))fail('Filter-RegEx ist ungültig oder benötigt zu viel Rechenzeit.');let regex:ReturnType<typeof expression>|undefined;try{regex=rules.excludeRegex?expression(rules.excludeRegex,'iu'):undefined;}catch(error){if(error instanceof AppError)throw error;fail('Filter-RegEx ungültig.');}
- const root=parseContent(data),events=root.children.filter(c=>c.name==='VEVENT');if(events.length>10000)fail('Zu viele Termine.');
+ const root=parseContent(data),clipStart=single(root,'X-CLIPSTART'),clipEnd=single(root,'X-CLIPEND');let clipWindow:Plan['clipWindow'];if(clipStart||clipEnd){if(!clipStart||!clipEnd||[clipStart,clipEnd].some(p=>Object.entries(p.params).some(([k,v])=>k!=='VALUE'||v!=='DATE-TIME')))fail('Clip-Grenzen fehlen oder haben uneindeutige Parameter.');clipWindow={start:clipInstant(clipStart.value),end:clipInstant(clipEnd.value)};if(clipWindow.start>=clipWindow.end)fail('Clip-Fenster ungültig.');}const events=root.children.filter(c=>c.name==='VEVENT');if(events.length>10000)fail('Zu viele Termine.');
  // Custom timezone definitions cannot override the IANA database silently.
  for(const zone of root.children.filter(c=>c.name==='VTIMEZONE')){const id=value(zone,'TZID');if(id==='W. Europe Standard Time'||id==='Europe/Berlin'){
   const standard=zone.children.find(c=>c.name==='STANDARD'),daylight=zone.children.find(c=>c.name==='DAYLIGHT');if(!standard||!daylight||value(standard,'TZOFFSETFROM')!=='+0200'||value(standard,'TZOFFSETTO')!=='+0100'||value(daylight,'TZOFFSETFROM')!=='+0100'||value(daylight,'TZOFFSETTO')!=='+0200'||!value(standard,'RRULE').includes('BYMONTH=10')||!value(standard,'RRULE').includes('BYDAY=-1SU')||!value(daylight,'RRULE').includes('BYMONTH=3')||!value(daylight,'RRULE').includes('BYDAY=-1SU'))fail('Windows-Zeitzonendefinition widerspricht der IANA-Zuordnung.');
@@ -89,6 +90,6 @@ export function parseCalendar(data:Uint8Array,sourceId:string,inputRules:Partial
  items.push({...common,event:stampFingerprint(body,rules)});
  }}
  const warnings=['Fehlende UIDs und Ausnahmen lösen keine Löschungen aus.'];if(rules.transforms?.some(r=>r.field==='title'))warnings.push('Titeltransforms sind bewusst freigegeben: nicht ersetzte Textteile können Originaltitel enthalten. Vorschau vor Übernahme prüfen.');if(root.properties.some(p=>['X-CLIPSTART','X-CLIPEND','X-CALSTART','X-CALEND'].includes(p.name)))warnings.push('Begrenzter Export: bestehende Serienstruktur darf nicht verkürzt werden.');if(!events.some(c=>props(c,'ATTENDEE').length))warnings.push('Keine vollständigen Teilnehmerdaten: Zusageanzahl wird weggelassen.');
- return {items,stats:{components:events.length,uids:groups.size,exceptions,upserts:items.filter(i=>!i.cancel).length,explicitCancellations:items.filter(i=>i.cancel).length},warnings};
+ return {...clipWindow?{clipWindow}:{},items,stats:{components:events.length,uids:groups.size,exceptions,upserts:items.filter(i=>!i.cancel).length,explicitCancellations:items.filter(i=>i.cancel).length},warnings};
  }catch(error){if(error instanceof AppError)throw error;throw new AppError('ICS oder Regel ungültig; Quelle wird vollständig übersprungen.');}
 }
