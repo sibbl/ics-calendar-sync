@@ -44,3 +44,25 @@ No trustworthy whole-export revision is supplied by these clips or DTSTAMP. This
 Protected `/data` records accepted byte fingerprints and clip ranges in operator-confirmed order before writes. Known older fingerprints cannot be replayed to resurrect a cancelled event, including after restart or filename/rule changes. An unfinished acknowledged version must resume from exactly its approved bytes before another version can be accepted. Quota/errors retain the pending head; successful actual-target reconciliation marks completion before optional file cleanup. State is bounded to 256 accepted exports and fails closed at the limit rather than forgetting replay protection. Keep state and approved input backups; never clear/edit history to bypass the guard. Use a reviewed migration when this limit or target identity needs changing. This is a small protected journal, not a database or calendar copy.
 
 Microsoft documents [clip start](https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxcical/a9a97a6f-6212-4d1d-8c0b-c034607e5d9b), [clip end](https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxcical/ad2b3963-1580-4af3-8518-65e81fed486d), and [DTSTAMP](https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxcical/4b93e7b6-142e-4f0c-ac08-1505a6fa0199). These definitions do not establish the end-boundary policy or a trustworthy export-wide generation counter.
+
+### Opt-in clipped weekly series preservation
+
+`clipSeriesMode: "preserve-master"` is available only for confirmed, manually
+ordered clip snapshots. The default remains strict. It handles bounded timed
+weekly rules (`COUNT` up to 1000, `INTERVAL` up to 52, plain `BYDAY`, `WKST`)
+when the original master and clipped master share the same weekly cadence,
+local start clock, timezone and duration. Unsupported rules, all-day series,
+ambiguous DST times, changed cadence or ownership stop the entire import.
+
+The existing master start/end and RRULE remain unchanged. Within the confirmed
+clip window only, additions are represented by RDATE and missing/excluded
+occurrences by EXDATE. Existing exception dates outside the window, including
+the protected end boundary, remain intact. Explicit instance overrides retain
+the existing ownership and original-start safeguards. This is a bounded
+migration, not permission to replace an entire series from a partial export.
+
+Recurrence changes require a fresh snapshot preview and bind to the target ETag.
+Target drift requires a new preview; final writes use If-Match. Files remain
+subject to the existing keep/consume and complete-import rules. Verify the
+preview on the deployment host before enabling the mode. Real exports and
+migration evidence must never enter developer checkouts, Git or CI.
