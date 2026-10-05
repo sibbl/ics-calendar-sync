@@ -1,3 +1,4 @@
+import {validateClippedSeries} from './clipped-series.js';
 import {allowsSnapshotCancellation} from './snapshot-preview.js';
 import {GoogleRequestGate,isRateLimit,type RateOptions} from './google-rate-limit.js';
 import {sameManagedEvent} from './event-equivalence.js';
@@ -116,12 +117,13 @@ export async function syncPlan(plan:Plan,source:Source,google:GooglePort,options
  const guard=()=>{if(options.shouldContinue&&!options.shouldContinue())throw new AppError('Quellkonfiguration während des Laufs geändert; vor nächstem Write gestoppt.');};
  async function trackedWrite(...args:Parameters<GooglePort['write']>){guard();const event=await google.write(...args);if(event&&!event.conflict)completedWrites++;return event;}
  function validate(current:RemoteEvent|null,item:Plan['items'][number]){
+  if(item.clipSeriesEtag&&current?.etag!==item.clipSeriesEtag)throw new AppError('Clip-Serienziel nach Vorschau geändert; vor Writes gestoppt.');
   if(current&&item.reconcileOrigin&&(!current.etag||current.recurringEventId||current.extendedProperties?.private?.origin!==item.reconcileOrigin||current.extendedProperties?.private?.key!==current.id||current.id!==item.key))throw new AppError('Reconciliation-Besitzmarkierung verändert; vor Writes gestoppt.');
   if(current&&!owned(current,source.id,source.calendarId))throw new AppError('Ziel gehört nicht dieser Quelle; Abgleich gestoppt.');if(!current||item.cancel)return;
   const before=current.recurrence??[],after=item.event!.recurrence??[];if(Boolean(before.length)!==Boolean(after.length))throw new AppError('Wechsel Einzeltermin/Serie benötigt geprüfte Migration.');
-  if(source.kind!=='google'&&before.length&&(!sameRecurrence(before,after)||!sameTime(current.start,item.event!.start)||!sameTime(current.end,item.event!.end)||!sameSeriesZone(current.start,item.event!.start)||!sameSeriesZone(current.end,item.event!.end)))throw new AppError('Serienstruktur oder Masterzeit geändert. Quelle und bestehende Zielserie widersprechen sich; Abgleich gestoppt. Vorschau erneuern und vollständigen ICS-Export prüfen.');
+  if(source.kind!=='google'&&before.length&&!validateClippedSeries(current,item,source,plan)&&(!sameRecurrence(before,after)||!sameTime(current.start,item.event!.start)||!sameTime(current.end,item.event!.end)||!sameSeriesZone(current.start,item.event!.start)||!sameSeriesZone(current.end,item.event!.end)))throw new AppError('Serienstruktur oder Masterzeit geändert. Quelle und bestehende Zielserie widersprechen sich; Abgleich gestoppt. Vorschau erneuern und vollständigen ICS-Export prüfen.');
  }
- async function update(current:RemoteEvent,item:Plan['items'][number]){const body={...item.event!,location:item.event!.location??'',description:'',attendees:[],attachments:[],conferenceData:null};if(body.recurrence&&source.kind!=='google'){delete body.recurrence;const {start:_,end:__,...metadata}=body;return trackedWrite('PATCH',item.key,metadata,current.etag);}return trackedWrite('PUT',item.key,body,current.etag);}
+ async function update(current:RemoteEvent,item:Plan['items'][number]){const body={...item.event!,location:item.event!.location??'',description:'',attendees:[],attachments:[],conferenceData:null};if(body.recurrence&&source.kind!=='google'){if(!item.clipSeriesEtag)delete body.recurrence;const {start:_,end:__,...metadata}=body;return trackedWrite('PATCH',item.key,metadata,current.etag);}return trackedWrite('PUT',item.key,body,current.etag);}
  const priority=(key:string)=>options.uncertain?.has(key)?-1:options.completed?.has(key)?1:0;
  const ordered=[...plan.items].sort((a,b)=>Number(!!a.parent)-Number(!!b.parent)||priority(a.key)-priority(b.key));
  try{
