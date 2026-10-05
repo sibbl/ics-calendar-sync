@@ -49,6 +49,12 @@ export function preserveClippedSeries(plan:Plan,source:Source,target:RemoteEvent
   added+=[...desired].filter(ms=>!previous.has(ms)).length;cancelled+=[...previous].filter(ms=>!desired.has(ms)).length;
   const inferred={EXDATE:aa.filter(ms=>!desired.has(ms)),RDATE:[...desired].filter(ms=>!aa.includes(ms))};
   for(const type of ['EXDATE','RDATE'] as const){if(newDates[type].some(ms=>!inside(ms)&&!oldDates[type].includes(ms)))return fail();const dates=[...new Set([...oldDates[type].filter(ms=>!inside(ms)),...newDates[type].filter(ms=>inside(ms)&&(type!=='RDATE'||!newDates.EXDATE.includes(ms))),...inferred[type]])].sort((a,b)=>a-b);if(dates.length)merged.push(type+':'+dates.map(ms=>DateTime.fromMillis(ms,{zone:'UTC'}).toFormat("yyyyMMdd'T'HHmmss'Z'")).join(','));}
+  const mergedDates=recurrenceDates(merged,a.zoneName!);
+  const dateSet=(values:number[])=>JSON.stringify([...new Set(values)].sort((a,b)=>a-b));
+  // Google normalizes UTC exception dates into local TZID lines. Preserve its
+  // exact representation when the instant sets are unchanged, avoiding a new
+  // migration approval or write solely for serialization differences.
+  if((['EXDATE','RDATE'] as const).every(type=>dateSet(oldDates[type])===dateSet(mergedDates[type])))merged.splice(0,merged.length,...old.recurrence);
   item.event=stampFingerprint({...next,start:old.start!,end:old.end!,recurrence:merged},source.rules);
   if(!sameRecurrence(old.recurrence,merged)){item.clipSeriesEtag=old.etag;item.clipSeriesInput=structuredClone(next);}
   normalized++;
