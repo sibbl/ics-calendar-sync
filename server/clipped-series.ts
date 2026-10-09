@@ -40,10 +40,13 @@ export function preserveClippedSeries(plan:Plan,source:Source,target:RemoteEvent
   const inside=(ms:number)=>ms>=window.startMillis&&(scope.boundary==='protect-boundary'?ms+(ae.toMillis()-a.toMillis())<window.endMillis:ms+(ae.toMillis()-a.toMillis())<=window.endMillis);
   const aa=occurrences(old).filter(inside),bb=occurrences(next).filter(inside);
   const withoutCount=(lines:string[])=>lines.filter(r=>r.startsWith('RRULE:')).map(r=>'RRULE:'+r.slice(6).split(';').filter(p=>!p.startsWith('COUNT=')).join(';'));
-  if(!bb.length||!sameRecurrence(withoutCount(old.recurrence),withoutCount(next.recurrence!)))return fail();
+  const oldDates=recurrenceDates(old.recurrence,a.zoneName!),newDates=recurrenceDates(next.recurrence!,b.zoneName!);
+  // A finite RRULE may have ended while explicit RDATE occurrences still lie
+  // in the clip. Validate the effective recurrence, not just the RRULE grid.
+  if(!sameRecurrence(withoutCount(old.recurrence),withoutCount(next.recurrence!))||!bb.length&&!newDates.RDATE.some(ms=>inside(ms)&&!newDates.EXDATE.includes(ms)))return fail();
   const grid=occurrences({...old,recurrence:old.recurrence.map(r=>r.startsWith('RRULE:')?r.replace(/COUNT=[1-9]\d*/, 'COUNT=1000'):r)},Math.max(b.toMillis(),...bb));
   if(!grid.includes(b.toMillis())||bb.some(ms=>!grid.includes(ms)))return fail();
-  const oldDates=recurrenceDates(old.recurrence,a.zoneName!),newDates=recurrenceDates(next.recurrence!,b.zoneName!);const merged=old.recurrence.filter(r=>r.startsWith('RRULE:'));
+  const merged=old.recurrence.filter(r=>r.startsWith('RRULE:'));
   const desired=new Set([...bb,...newDates.RDATE.filter(inside)].filter(ms=>!newDates.EXDATE.includes(ms)));
   const previous=new Set([...aa,...oldDates.RDATE.filter(inside)].filter(ms=>!oldDates.EXDATE.includes(ms)));
   added+=[...desired].filter(ms=>!previous.has(ms)).length;cancelled+=[...previous].filter(ms=>!desired.has(ms)).length;

@@ -73,3 +73,8 @@ EXDATE exclusions, unsupported recurrence shapes, missing timing/ownership, chan
 and out-of-window instances remain protected. Restoration is an instance update, never
 an inferred deletion. A changed master must first be reconciled separately and a fresh
 preview approved; a restored instance is a no-op on repeat runs.
+
+Clip validation includes explicit `RDATE` occurrences even after a finite weekly
+`RRULE` has ended. `EXDATE` exclusions and protected window boundaries still
+apply; a genuinely empty effective clip retains the existing stop. Supported
+RDATE-only changes remain bounded and require the existing preview/ETag approval.
