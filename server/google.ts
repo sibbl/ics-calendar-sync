@@ -7,7 +7,7 @@ import {sameTime,sameRecurrence,sameSeriesZone} from './series-structure.js';
 import {ExpiredCursor,type GoogleSourcePort,type SourcePage,type SourceEvent} from './google-source.js';
 import type {Config} from './config.js';
 import type {EventTime,Plan,Source,TargetEvent,GoogleCalendar} from '../shared/contracts.js';
-import {AppError} from './errors.js';
+import {AppError,RevisionError} from './errors.js';
 import {FileAuthStore,type AuthCredentials} from './auth-store.js';
 export interface RemoteEvent {id:string;summary?:string;location?:string;transparency?:string;visibility?:string;reminders?:{useDefault?:boolean;overrides?:unknown[]};description?:string;attendees?:unknown[];attachments?:unknown[];conferenceData?:Record<string,unknown>;hangoutLink?:string;status?:string;etag?:string;recurrence?:string[];start?:EventTime;end?:EventTime;originalStartTime?:EventTime;recurringEventId?:string;extendedProperties?:{private?:Record<string,string>};conflict?:boolean}
 export const CALENDAR_LIST_SCOPE='https://www.googleapis.com/auth/calendar.calendarlist.readonly';
@@ -120,8 +120,8 @@ export async function syncPlan(plan:Plan,source:Source,google:GooglePort,options
   if(item.clipSeriesEtag&&current?.etag!==item.clipSeriesEtag)throw new AppError('Clip-Serienziel nach Vorschau geändert; vor Writes gestoppt.');
   if(current&&item.reconcileOrigin&&(!current.etag||current.recurringEventId||current.extendedProperties?.private?.origin!==item.reconcileOrigin||current.extendedProperties?.private?.key!==current.id||current.id!==item.key))throw new AppError('Reconciliation-Besitzmarkierung verändert; vor Writes gestoppt.');
   if(current&&!owned(current,source.id,source.calendarId))throw new AppError('Ziel gehört nicht dieser Quelle; Abgleich gestoppt.');if(!current||item.cancel)return;
-  const before=current.recurrence??[],after=item.event!.recurrence??[];if(Boolean(before.length)!==Boolean(after.length))throw new AppError('Wechsel Einzeltermin/Serie benötigt geprüfte Migration.');
-  if(source.kind!=='google'&&before.length&&!validateClippedSeries(current,item,source,plan)&&(!sameRecurrence(before,after)||!sameTime(current.start,item.event!.start)||!sameTime(current.end,item.event!.end)||!sameSeriesZone(current.start,item.event!.start)||!sameSeriesZone(current.end,item.event!.end)))throw new AppError('Serienstruktur oder Masterzeit geändert. Quelle und bestehende Zielserie widersprechen sich; Abgleich gestoppt. Vorschau erneuern und vollständigen ICS-Export prüfen.');
+  const before=current.recurrence??[],after=item.event!.recurrence??[];if(Boolean(before.length)!==Boolean(after.length))throw new RevisionError('Wechsel Einzeltermin/Serie benötigt geprüfte Migration.');
+  if(source.kind!=='google'&&before.length&&!validateClippedSeries(current,item,source,plan)&&(!sameRecurrence(before,after)||!sameTime(current.start,item.event!.start)||!sameTime(current.end,item.event!.end)||!sameSeriesZone(current.start,item.event!.start)||!sameSeriesZone(current.end,item.event!.end)))throw new RevisionError('Serienstruktur oder Masterzeit geändert. Quelle und bestehende Zielserie widersprechen sich; Abgleich gestoppt. Vorschau erneuern und vollständigen ICS-Export prüfen.');
  }
  async function update(current:RemoteEvent,item:Plan['items'][number]){const body={...item.event!,location:item.event!.location??'',description:'',attendees:[],attachments:[],conferenceData:null};if(body.recurrence&&source.kind!=='google'){if(!item.clipSeriesEtag)delete body.recurrence;const {start:_,end:__,...metadata}=body;return trackedWrite('PATCH',item.key,metadata,current.etag);}return trackedWrite('PUT',item.key,body,current.etag);}
  const priority=(key:string)=>options.uncertain?.has(key)?-1:options.completed?.has(key)?1:0;
@@ -131,6 +131,7 @@ export async function syncPlan(plan:Plan,source:Source,google:GooglePort,options
   // Complete ownership/structure preflight before any write. Missing IDs in the
   // filtered owned inventory are fetched individually, retaining collision guards.
   for(const item of plan.items.filter(i=>!i.parent)){guard();const cached=known.get(item.key),current=cached?.etag?cached:await google.get(item.key);validate(current??null,item);masters.set(item.key,current??null);}
+  for(const item of plan.items.filter(i=>i.restoreEtag)){const parent=await google.get(item.parent!);if(!owned(parent,source.id,source.calendarId)||parent?.etag!==item.restoreParentEtag)throw new RevisionError('Serienmaster nach Wiederherstellungsvorschau geändert.');const matches=(await google.instances(item.parent!,item.original!)).filter(e=>e.recurringEventId===item.parent&&sameTime(e.originalStartTime,item.original));if(matches.length!==1||matches[0]!.etag!==item.restoreEtag)throw new RevisionError('Serienausnahme nach Wiederherstellungsvorschau geändert.');}
   for(const item of ordered){guard();currentKey=item.key;
    if(!item.parent){let current=masters.get(item.key)??null;
     const identical=()=>item.cancel?current?.status==='cancelled':!!current&&sameManagedEvent(current,item.event!);
@@ -151,6 +152,7 @@ export async function syncPlan(plan:Plan,source:Source,google:GooglePort,options
     let current=matching[0]!;validateInstance(current);const identical=()=>item.cancel?current.status==='cancelled':sameManagedEvent(current,item.event!);
     if(identical()){result.unchanged++;complete(item.key);continue;}
     if(!writtenParents.has(item.parent)&&knownInstances.has(item.parent+'|'+identity(item.original))){matching=await matches();if(matching.length!==1)throw new AppError('Ursprüngliche Serieninstanz nicht eindeutig; keine Ersatzinstanz erzeugt.');current=matching[0]!;validateInstance(current);if(identical()){result.unchanged++;complete(item.key);continue;}}
+    if(item.restoreEtag){const freshParent=await google.get(item.parent);if(!owned(current,source.id,source.calendarId)||current.extendedProperties?.private?.key!==item.key||current.etag!==item.restoreEtag||freshParent?.etag!==item.restoreParentEtag||!item.restoreScope||!allowsSnapshotCancellation({...current,recurringEventId:undefined,recurrence:undefined},item.restoreScope))throw new RevisionError('Wiederherstellungsziel nach Vorschau geändert.');}
     changed++;const updated=await trackedWrite(item.cancel?'PATCH':'PUT',current.id,item.cancel?{status:'cancelled'}:{...item.event!,location:item.event!.location??'',description:'',attendees:[],attachments:[],conferenceData:null},current.etag);if(!updated)throw new AppError('Serieninstanz während des Abgleichs verschwunden.');result[item.cancel?'cancelled':'upserted']++;complete(item.key);
    }
   }

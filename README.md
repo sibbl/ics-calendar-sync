@@ -54,3 +54,22 @@ Release privacy: BuildKit provenance and automatic build-record uploads are disa
 Optional folder replacement snapshots and keep/archive/delete handling are described in [SNAPSHOTS.md](SNAPSHOTS.md). Scope is explicit; missing/outside-window events are protected unless a reviewed authoritative snapshot permits cancellation. New revisions require confirmed previews, with protected /data approval/cleanup state. Default aggregation/keep/read-only behavior is unchanged. No cleanup mode is enabled by the image or deployment workflow.
 
 For an existing deployment, follow [SYNOLOGY-UPDATE.md](SYNOLOGY-UPDATE.md) using the exact reviewed release image.
+
+### Snapshot retries and recurring exceptions
+
+Folder watchers pause approval/series-structure failures for the current input revision;
+changed bytes/configuration or a manual retry re-evaluate the source. Transient failures
+use exponential backoff capped by the ordinary source interval (at least the poll interval).
+A paused automatic revision does not repeatedly fetch the complete target inventory.
+Snapshot folders still read only the explicitly selected file. Other ICS files produce
+a count-only warning; neither filename sorting nor modification time grants snapshot authority.
+
+The snapshot preview reports protected missing recurring exceptions. For a supported
+bounded weekly series, a disappeared owned exception can be proposed for restoration to
+the normal series occurrence inside an explicitly complete window. Both its current and
+restored times must be inside that window. The unchanged owned master and exception ETags
+are bound to preview approval and checked again before mutation. Incoming cancellations,
+EXDATE exclusions, unsupported recurrence shapes, missing timing/ownership, changed masters
+and out-of-window instances remain protected. Restoration is an instance update, never
+an inferred deletion. A changed master must first be reconciled separately and a fresh
+preview approved; a restored instance is a no-op on repeat runs.
