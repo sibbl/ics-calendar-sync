@@ -1,16 +1,16 @@
 import {DateTime} from 'luxon';
-import {AppError} from './errors.js';
+import {RevisionError} from './errors.js';
 import type {RemoteEvent} from './google.js';
 import {clipScope} from './clip-window.js';
 import {validatedWindow} from './snapshot-preview.js';
 import {sameRecurrence,sameTime,sameSeriesZone} from './series-structure.js';
 import {stampFingerprint} from './event-fingerprint.js';
 import type {EventTime,Plan,Source} from '../shared/contracts.js';
-const fail=():never=>{throw new AppError('Clip-Serie nicht sicher abgleichbar; vollständigen Export oder geprüfte Migration verwenden.');};
+const fail=():never=>{throw new RevisionError('Clip-Serie nicht sicher abgleichbar; vollständigen Export oder geprüfte Migration verwenden.');};
 const weekdays=['MO','TU','WE','TH','FR','SA','SU'];
 function local(t:EventTime|undefined){if(!t||t.date||!t.timeZone) return fail();const d=DateTime.fromISO(t.dateTime,{zone:t.timeZone});if(!d.isValid)return fail();return d;}
 // Deliberately bounded subset. More complex rules retain the existing hard stop.
-function occurrences(event:{start?:EventTime;recurrence?:string[]}){
+export function occurrences(event:{start?:EventTime;recurrence?:string[]},until=Infinity){
  const start=local(event.start),lines=event.recurrence??[];const rules=lines.filter(r=>r.startsWith('RRULE:'));
  if(rules.length!==1||lines.some(r=>! /^(RRULE:|(?:EXDATE|RDATE)(?:;[^:]*)?:)/.test(r)))return fail();
  const parts=rules[0]!.slice(6).split(';').map(p=>p.split('='));const r:Record<string,string>=Object.fromEntries(parts);
@@ -20,10 +20,10 @@ function occurrences(event:{start?:EventTime;recurrence?:string[]}){
  const wkst=weekdays.indexOf(r.WKST??'MO'),days=(r.BYDAY??weekdays[start.weekday-1]!).split(',').map(d=>weekdays.indexOf(d));
  if(wkst<0||days.some(d=>d<0)||new Set(days).size!==days.length||!days.includes(start.weekday-1))return fail();
  const weekStart=start.minus({days:(start.weekday-1-wkst+7)%7});const offsets=days.map(d=>(d-wkst+7)%7).sort((a,b)=>a-b);const out:number[]=[];
- for(let w=0;out.length<count&&w<=count;w++)for(const offset of offsets){const d=weekStart.plus({weeks:w*interval,days:offset});if(d.toMillis()<start.toMillis())continue;if(d.toFormat('HH:mm:ss')!==start.toFormat('HH:mm:ss')||d.getPossibleOffsets().length!==1)return fail();out.push(d.toMillis());if(out.length===count)break;}
+ for(let w=0;out.length<count&&w<=count;w++)for(const offset of offsets){const d=weekStart.plus({weeks:w*interval,days:offset});if(d.toMillis()<start.toMillis())continue;if(d.toMillis()>until)return out;if(d.toFormat('HH:mm:ss')!==start.toFormat('HH:mm:ss')||d.getPossibleOffsets().length!==1)return fail();out.push(d.toMillis());if(out.length===count)break;}
  if(out.length!==count)return fail();return out;
 }
-function recurrenceDates(lines:string[],zone:string){const result:{EXDATE:number[];RDATE:number[]}={EXDATE:[],RDATE:[]};
+export function recurrenceDates(lines:string[],zone:string){const result:{EXDATE:number[];RDATE:number[]}={EXDATE:[],RDATE:[]};
  for(const line of lines){const m=/^(EXDATE|RDATE)(?:;TZID=([^;:]+))?:(.+)$/.exec(line);if(!m){if(!line.startsWith('RRULE:'))return fail();continue;}
   for(const raw of m[3]!.split(',')){if(!/^\d{8}T\d{6}Z?$/.test(raw))return fail();const z=raw.endsWith('Z')?'UTC':m[2]??zone;const d=DateTime.fromFormat(raw.replace(/Z$/,''),"yyyyMMdd'T'HHmmss",{zone:z});if(!d.isValid||d.getPossibleOffsets().length!==1)return fail();result[m[1] as 'EXDATE'|'RDATE'].push(d.toMillis());}}
  return result;
@@ -41,7 +41,7 @@ export function preserveClippedSeries(plan:Plan,source:Source,target:RemoteEvent
   const aa=occurrences(old).filter(inside),bb=occurrences(next).filter(inside);
   const withoutCount=(lines:string[])=>lines.filter(r=>r.startsWith('RRULE:')).map(r=>'RRULE:'+r.slice(6).split(';').filter(p=>!p.startsWith('COUNT=')).join(';'));
   if(!bb.length||!sameRecurrence(withoutCount(old.recurrence),withoutCount(next.recurrence!)))return fail();
-  const grid=occurrences({...old,recurrence:old.recurrence.map(r=>r.startsWith('RRULE:')?r.replace(/COUNT=[1-9]\d*/, 'COUNT=1000'):r)});
+  const grid=occurrences({...old,recurrence:old.recurrence.map(r=>r.startsWith('RRULE:')?r.replace(/COUNT=[1-9]\d*/, 'COUNT=1000'):r)},Math.max(b.toMillis(),...bb));
   if(!grid.includes(b.toMillis())||bb.some(ms=>!grid.includes(ms)))return fail();
   const oldDates=recurrenceDates(old.recurrence,a.zoneName!),newDates=recurrenceDates(next.recurrence!,b.zoneName!);const merged=old.recurrence.filter(r=>r.startsWith('RRULE:'));
   const desired=new Set([...bb,...newDates.RDATE.filter(inside)].filter(ms=>!newDates.EXDATE.includes(ms)));
