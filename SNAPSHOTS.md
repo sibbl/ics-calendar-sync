@@ -68,3 +68,71 @@ Target drift requires a new preview; final writes use If-Match. Files remain
 subject to the existing keep/consume and complete-import rules. Verify the
 preview on the deployment host before enabling the mode. Real exports and
 migration evidence must never enter developer checkouts, Git or CI.
+
+## Opt-in automatic weekly exports
+
+`folderMode: "snapshot"` still means replacement, not aggregation. To choose a
+new file without editing its basename, set `snapshotSelection: "latest-mtime"`.
+The direct ICS file with the uniquely greatest modification timestamp is selected.
+Ties, unreadable/changing input, invalid exports and missing clip bounds stop;
+there is no fallback to an older valid-looking file. Other files are not merged.
+The explicit basename remains the default and existing configurations are unchanged.
+
+For unattended application also set `snapshotAutoApply: true`, explicitly confirm
+`snapshotClip.completeExportConfirmed: true`, and keep `fileHandling: "keep"`.
+This is a **standing operator approval** for complete exports from a trusted
+producer and for modification time as that producer's publication order. It is
+not proof of content freshness. Publish complete files atomically (temporary
+non-ICS filename, then rename); do not touch old exports or copy unknown older
+exports back with newer timestamps. Known accepted old bytes are rejected even
+under a new filename/time. Unknown old bytes with a newer timestamp cannot be
+recognized reliably; use explicit selection/manual confirmation if that producer
+contract cannot be guaranteed. The legacy `ordering: "manual-confirm"` field
+remains for compatibility; only the explicit auto-apply flag replaces per-version
+manual confirmation with this standing policy.
+
+Automatic mode still builds a fresh complete target preview and persists approval
+bound to source bytes, configuration, removal ETags and series ETags before writes.
+The private journal records the selected input and a nondecreasing timestamp
+watermark. A pending version resumes from its recorded input before considering a
+newer candidate, including after restart. Missing/changed pending bytes stop rather
+than authorizing a replacement. Empty exports always need separate manual handling;
+no automatic calendar clearing. Approval history remains bounded and does not
+silently discard old replay protection. `/data` is required. Preview-only runs do
+not accept or apply exports. Keep the existing single-writer queue and scheduler.
+
+The UI exposes file selection, producer trust/auto-apply and series strategy in
+source settings. Export these settings to the private ENV configuration after
+review; UI edits alone remain ephemeral.
+
+## Opt-in bounded instance reconciliation
+
+`clipSeriesMode: "window-reconcile"` is a separate reviewed migration strategy;
+`strict` and `preserve-master` retain their existing behavior. It supports bounded
+expansion of timed DAILY, WEEKLY, MONTHLY and YEARLY rules using pinned `ical.js`
+recurrence arithmetic and IANA/Luxon timezone resolution. Supported rule fields
+are FREQ, COUNT, UNTIL, INTERVAL, BYDAY (including monthly ordinals), BYMONTHDAY,
+BYMONTH, BYSETPOS and WKST. UTC UNTIL is compared as an instant, not a floating
+wall clock. All-day rules, high-frequency rules, ambiguous/nonexistent DST times,
+unsupported fields and resource limits stop rather than guess.
+
+Existing master start/end and RRULE remain unchanged. In-window base slots are
+reconciled using bounded EXDATE/RDATE changes; native instance overrides supply
+current times, durations and mapped metadata, including explicit exceptions.
+Owned obsolete overrides inside the window are cancelled with fresh ETag/scope
+checks. A missing owned series is suppressed only inside the confirmed window;
+its outside recurrence remains. New series are bounded to the window with RDATEs,
+not imported as an unbounded master. Identifiers are deterministic across repeats.
+No recurrence master is deleted because it is absent from a bounded export.
+
+Both original and actual override times must fit inside the permitted scope.
+Boundary-crossing conflicts stop; protected boundary slots are not inferred to be
+absent. Ownership and final ETag checks remain mandatory. Windows are limited to
+370 days, expansion to 40,000 steps and 100 years of lookback, desired instances to
+2,000 per series, 200,000 expanded instants across the source and complete plans to 10,000 items. Complex/older rules need a
+separately reviewed migration rather than raising limits blindly.
+
+Rollout: review and merge the PR, publish the release, deploy preview-only with a
+private backup, explicitly enable the new strategy for the intended source, inspect
+the exact preview and only then restore its single existing writer. No default
+configuration or running installation is automatically changed by these options.

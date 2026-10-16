@@ -1,3 +1,4 @@
+import {reconcileWindowSeries} from './window-series.js';
 import {DateTime} from 'luxon';
 import {RevisionError} from './errors.js';
 import type {RemoteEvent} from './google.js';
@@ -29,6 +30,7 @@ export function recurrenceDates(lines:string[],zone:string){const result:{EXDATE
  return result;
 }
 export function preserveClippedSeries(plan:Plan,source:Source,target:RemoteEvent[]):Plan{
+ if(source.clipSeriesMode==='window-reconcile')return reconcileWindowSeries(plan,source,target);
  if(source.clipSeriesMode!=='preserve-master'||!source.snapshotClip)return plan;
  const scope=clipScope(plan,source),window=validatedWindow(scope);if(!window||scope.authority!=='window')return fail();
  const result=structuredClone(plan),known=new Map(target.filter(e=>!e.recurringEventId).map(e=>[e.id,e]));let normalized=0,added=0,cancelled=0;
@@ -69,6 +71,7 @@ export function preserveClippedSeries(plan:Plan,source:Source,target:RemoteEvent
 // Re-evaluate the bounded transformation against a fresh ETag before mutation.
 export function validateClippedSeries(current:RemoteEvent,item:Plan['items'][number],source:Source,plan:Plan){
  if(!item.clipSeriesEtag||current.etag!==item.clipSeriesEtag)return false;
+ if(source.clipSeriesMode==='window-reconcile'&&item.windowSeriesInput){try{const probe=reconcileWindowSeries({...plan,items:item.windowSeriesInput},source,[current]).items.find(i=>i.key===item.key);return !!probe?.event&&sameRecurrence(probe.event.recurrence??[],item.event!.recurrence??[])&&sameTime(current.start,item.event!.start)&&sameTime(current.end,item.event!.end);}catch{return false;}}
  // The original unnormalized event is kept only in the in-memory plan.
  if(!item.clipSeriesInput)return false;
  try{const probe=preserveClippedSeries({...plan,items:[{...item,event:item.clipSeriesInput,clipSeriesEtag:undefined,clipSeriesInput:undefined}]},source,[current]);return sameRecurrence(probe.items[0]!.event!.recurrence??[],item.event!.recurrence??[])&&sameTime(current.start,item.event!.start)&&sameTime(current.end,item.event!.end);}catch{return false;}

@@ -97,3 +97,9 @@ it('makes unselected snapshot exports visible after a successful automatic sync 
  await screen.findByText('Ausgewählte Snapshot-Datei geprüft');expect(screen.getByText(/2 weitere ICS-Dateien nicht eingelesen/)).toHaveTextContent('Snapshot-Dateiname in den Einstellungen ändern, Vorschau prüfen und bestätigen');
  expect(screen.getByText(/Dateizeiten beweisen keine Neuheit/)).toBeVisible();expect(screen.queryByText('Prüfung erfolgreich')).not.toBeInTheDocument();expect(screen.queryByRole('table')).not.toBeInTheDocument();expect(transport).toHaveBeenCalledTimes(1);
 });
+
+it('makes automatic latest-file publication trust and bounded instance reconciliation explicit opt-ins',async()=>{
+ const source={...SOURCE,kind:'folder',folderMode:'snapshot',snapshotFile:'invented.ics',snapshotClip:{completeExportConfirmed:true,boundary:'protect-boundary',ordering:'manual-confirm'}};
+ vi.stubGlobal('fetch',vi.fn(async()=>Response.json({sources:[source],statuses:{},writesEnabled:false,oauthConfigured:false,ephemeral:true,demo:true})));render(<App/>);loginSynthetic();await screen.findByLabelText('Quelle');fireEvent.click(screen.getByRole('button',{name:'Einstellungen'}));expect(screen.getByLabelText('Dateiauswahl')).toHaveValue('explicit');expect(screen.getByLabelText(/Neue vollständige Exporte automatisch übernehmen/)).toBeDisabled();
+ fireEvent.change(screen.getByLabelText('Dateiauswahl'),{target:{value:'latest-mtime'}});expect(screen.getByLabelText('Snapshot-Dateiname')).not.toBeRequired();expect(screen.getByLabelText(/Neue vollständige Exporte automatisch übernehmen/)).toBeEnabled();fireEvent.click(screen.getByLabelText(/Neue vollständige Exporte automatisch übernehmen/));fireEvent.change(screen.getByLabelText('Serienabgleich'),{target:{value:'window-reconcile'}});expect(screen.getByLabelText('Serienabgleich')).toHaveValue('window-reconcile');expect(screen.getByLabelText(/Neue vollständige Exporte automatisch übernehmen/)).toBeChecked();
+});
