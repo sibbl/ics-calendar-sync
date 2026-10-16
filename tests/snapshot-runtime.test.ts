@@ -31,3 +31,42 @@ it('requires preview approval then preserves master and repeats without recurren
 
 it('binds disappeared exception restoration to fresh snapshot approval and ETags',async()=>fixture(async({file,r,g})=>{r.sources[0].snapshotScope={authority:'window',window:{start:'2026-03-01',end:'2026-05-01',timezone:'Europe/Berlin'}};await fs.writeFile(file,ics([MASTER,EX]));await approve(r);await fs.writeFile(file,ics([MASTER]));const count=g.calls.length;await expect(r.execute(SID,true)).rejects.toThrow('bestätigte Vorschau');expect(g.calls).toHaveLength(count);const p:any=await r.execute(SID);expect(p.snapshotPreview.proposedRestores).toHaveLength(1);const instance=[...g.events.values()].find((e:any)=>e.recurringEventId);instance.etag='synthetic-drift';await expect(r.execute(SID,true,undefined,{token:p.snapshotPreview.token})).rejects.toThrow('Serienziel');expect(g.calls).toHaveLength(count);await approve(r);expect(g.calls).toHaveLength(count+1);await r.execute(SID,true);expect(g.calls).toHaveLength(count+1);}));
 it('does not reload target inventory for a revision-paused automatic run; changed bytes resume evaluation',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE]));const reads=vi.spyOn(g,'listManagedEvents');await expect(r.execute(SID,true,'schedule')).rejects.toThrow('bestätigte Vorschau');const count=reads.mock.calls.length;await expect(r.execute(SID,true,'schedule')).rejects.toThrow('bestätigte Vorschau');expect(reads).toHaveBeenCalledTimes(count);await fs.writeFile(file,ics([BASE.replace('synthetic-uid','synthetic-new')]));await expect(r.execute(SID,true,'schedule')).rejects.toThrow('bestätigte Vorschau');expect(reads).toHaveBeenCalledTimes(count+1);}));
+
+it('keeps incoming exports unselected until fresh approval, then imports additions and a moved exception with its new duration',async()=>fixture(async({file,input,r,g})=>{
+ // Entirely invented export revisions: independent future dates, fresh UIDs,
+ // no production-derived titles, identities, addresses or event fragments.
+ r.sources[0].snapshotScope={authority:'window',window:{start:'2044-02-01',end:'2044-03-01',timezone:'UTC'}};
+ const master='UID:invented-orbit-series@example.invalid\r\nDTSTART:20440201T071500Z\r\nDTEND:20440201T080000Z\r\nRRULE:FREQ=WEEKLY;COUNT=4;BYDAY=MO\r\nSUMMARY:Invented orbit workshop';
+ const exception='UID:invented-orbit-series@example.invalid\r\nRECURRENCE-ID:20440208T071500Z\r\nDTSTART:20440209T111000Z\r\nDTEND:20440209T113000Z';
+ const changed=exception.replace('20440209T111000Z','20440210T162000Z').replace('20440209T113000Z','20440210T174000Z');
+ const additions=['UID:invented-comet@example.invalid\r\nDTSTART:20440212T094500Z\r\nDTEND:20440212T101000Z','UID:invented-lunar@example.invalid\r\nDTSTART:20440216T122000Z\r\nDTEND:20440216T125500Z'];
+ await fs.writeFile(file,ics([master,exception]));await approve(r);
+ const nextFile=path.join(input,'incoming-synthetic.ics');await fs.writeFile(nextFile,ics([master,changed,...additions]));
+ // A later filesystem timestamp does not confer authority to select a file.
+ await fs.utimes(nextFile,new Date('2050-01-01T00:00:00Z'),new Date('2050-01-01T00:00:00Z'));
+ const oldPreview:any=await r.execute(SID);expect(oldPreview.stats).toMatchObject({files:1,filesIgnored:1,components:2});
+ const before=g.calls.length;await r.execute(SID,true,'schedule');expect(g.calls).toHaveLength(before);
+ expect(r.statuses[SID]).toMatchObject({ok:true,mode:'sync',stats:{filesIgnored:1},sync:{upserted:0,unchanged:2}});
+ const oldInstance=[...g.events.values()].find((e:any)=>e.recurringEventId);expect(oldInstance.start.dateTime).toContain('2044-02-09T11:10:00');
+ r.sources[0].snapshotFile='incoming-synthetic.ics';
+ await expect(r.execute(SID,true,undefined,{token:oldPreview.snapshotPreview.token})).rejects.toThrow('Snapshot geändert');expect(g.calls).toHaveLength(before);
+ const next:any=await r.execute(SID);expect(next.snapshotPreview).toMatchObject({added:2,changed:1,unchanged:1});
+ await r.execute(SID,true,undefined,{token:next.snapshotPreview.token});expect(g.calls).toHaveLength(before+3);
+ const instance=[...g.events.values()].find((e:any)=>e.recurringEventId);expect(instance.id).toBe(oldInstance.id);expect(instance.originalStartTime).toEqual(oldInstance.originalStartTime);
+ expect(instance.start.dateTime).toContain('2044-02-10T16:20:00');expect(instance.end.dateTime).toContain('2044-02-10T17:40:00');
+ expect([...g.events.values()].filter((e:any)=>!e.recurringEventId)).toHaveLength(3);
+ await r.execute(SID,true,'schedule');expect(g.calls).toHaveLength(before+3);expect(r.statuses[SID].sync?.unchanged).toBe(4);
+ expect(await fs.readFile(file)).toEqual(Buffer.from(ics([master,exception])));expect(await fs.readFile(nextFile)).toEqual(Buffer.from(ics([master,changed,...additions])));
+}));
+
+it('reports zero ignored exports for a snapshot-only folder and leaves aggregate mode unchanged',async()=>fixture(async({file,input,r})=>{
+ await fs.writeFile(file,ics([BASE]));const snapshot:any=await r.execute(SID);expect(snapshot.stats.filesIgnored).toBe(0);
+ await fs.writeFile(path.join(input,'other-synthetic.ics'),ics([BASE.replace('synthetic-uid','invented-second')]));r.sources[0].folderMode='aggregate';
+ const aggregate:any=await r.execute(SID);expect(aggregate.stats.files).toBe(2);expect(aggregate.stats.filesIgnored).toBeUndefined();
+}));
+
+it('does not treat an unselected export as the next input after consuming an approved snapshot',async()=>fixture(async({file,input,r,g})=>{
+ await fs.writeFile(file,ics([BASE]));await approve(r);const before=g.calls.length;
+ await fs.writeFile(path.join(input,'unselected-synthetic.ics'),ics([BASE.replace('synthetic-uid','invented-not-approved')]));
+ await r.execute(SID,true);expect(g.calls).toHaveLength(before);expect(r.statuses[SID].stats).toMatchObject({files:0,filesIgnored:1});expect([...g.events.values()].filter((e:any)=>e.status==='confirmed')).toHaveLength(1);
+},'delete'));
