@@ -1,3 +1,4 @@
+import {DateTime} from 'luxon';
 import {it,expect} from 'vitest';
 import {parseCalendar} from '../server/calendar';
 import {preserveClippedSeries} from '../server/clipped-series';
@@ -38,3 +39,25 @@ it('rejects DST ambiguity, unsupported high-frequency rules and excessive horizo
 });
 it('does not silently discard an obsolete override with only inherited parent ownership',()=>{const {p,target}=fixture();const current={id:'invented-inherited-instance',recurringEventId:target.id,originalStartTime:{dateTime:'2044-03-07T06:45:00Z',timeZone:'UTC'},start:{dateTime:'2044-03-09T11:00:00Z',timeZone:'UTC'},end:{dateTime:'2044-03-09T11:40:00Z',timeZone:'UTC'},etag:'invented-inherited-etag',extendedProperties:{private:target.extendedProperties.private}};expect(()=>preserveClippedSeries(p,source,[target,current])).toThrow();});
 it('keeps a newly introduced master anchored to the original slot when its first occurrence is moved',()=>{const {p}=fixture();const child='UID:invented-solar@example.invalid\r\nRECURRENCE-ID:20440307T082000Z\r\nDTSTART:20440309T113000Z\r\nDTEND:20440309T115500Z';const incoming=master.replaceAll('20440201','20440307').replaceAll('T074500','T092000').replaceAll('T083000','T104000').replace('COUNT=8','COUNT=7');const plan=parseCalendar(ics([incoming,child]),SID,{},source.calendarId);plan.clipWindow=p.clipWindow;const normalized=preserveClippedSeries(plan,source,[]),root=normalized.items.find(i=>!i.parent)!;expect(Date.parse(root.event!.start.dateTime!)).toBe(Date.parse('2044-03-07T08:20:00Z'));expect(root.event!.extendedProperties.private.key).toBe(root.key);expect(windowOccurrences(root.event!,Date.parse(p.clipWindow!.end)).effective).toHaveLength(2);expect(normalized.items.some(i=>i.parent&&i.event?.start.dateTime?.includes('2044-03-09T11:30:00'))).toBe(true);});
+
+it('retains equivalent Google-normalized RDATE/EXDATE lines without repeated master writes',async()=>{
+ const {p,target}=fixture(),g=new FakeGoogle();g.events.set(target.id,target);
+ await syncPlan(preserveClippedSeries(p,source,[target]),source,g);
+ const current=g.events.get(target.id)!;
+ current.recurrence=current.recurrence!.flatMap(line=>{
+  const match=/^(RDATE|EXDATE):(.+)$/.exec(line);if(!match)return [line];
+  return match[2].split(',').reverse().map(value=>match[1]+';TZID=Europe/Berlin:'+DateTime.fromFormat(value,"yyyyMMdd'T'HHmmss'Z'",{zone:'UTC'}).setZone('Europe/Berlin').toFormat("yyyyMMdd'T'HHmmss"));
+ });
+ const serverRecurrence=structuredClone(current.recurrence);
+ const repeated=preserveClippedSeries(p,source,[...g.events.values()]);
+ expect(repeated.items.find(i=>!i.parent)!.event!.recurrence).toEqual(serverRecurrence);
+ const before=g.calls.length;
+ const result=await syncPlan(repeated,source,g);
+ expect(result.upserted).toBe(0);expect(g.calls).toHaveLength(before);
+ // A real clock change still requires a scoped migration, not normalization.
+ const changed=structuredClone(p),incoming=changed.items.find(i=>!i.parent)!.event!;
+ incoming.start={dateTime:DateTime.fromISO(incoming.start.dateTime!).plus({minutes:5}).toISO()!,timeZone:'Europe/Berlin'};
+ incoming.end={dateTime:DateTime.fromISO(incoming.end.dateTime!).plus({minutes:5}).toISO()!,timeZone:'Europe/Berlin'};
+ const next=preserveClippedSeries(changed,source,[...g.events.values()]);
+ expect(next.items.find(i=>!i.parent)!.clipSeriesEtag).toBeTruthy();
+});
