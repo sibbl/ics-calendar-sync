@@ -5,6 +5,7 @@ import {validatedWindow,allowsSnapshotCancellation} from './snapshot-preview.js'
 import {stampFingerprint} from './event-fingerprint.js';
 import {sameRecurrence} from './series-structure.js';
 import {windowOccurrences,timed,windowFail} from './window-recurrence.js';
+import {recurrenceDates} from './clipped-series.js';
 import type {Item,Plan,Source,TargetEvent} from '../shared/contracts.js';
 import type {RemoteEvent} from './google.js';
 const line=(name:string,values:number[])=>name+':'+[...new Set(values)].sort((a,b)=>a-b).map(ms=>DateTime.fromMillis(ms,{zone:'UTC'}).toFormat("yyyyMMdd'T'HHmmss'Z'")).join(',');
@@ -48,7 +49,9 @@ export function reconcileWindowSeries(plan:Plan,source:Source,target:RemoteEvent
    const excluded=[...dates.EXDATE.filter(ms=>!inside(ms,ms+oldDuration!)),...originalOldInside.filter(ms=>!desired.has(ms))];
    if(rdates.length)recurrence.push(line('RDATE',rdates));if(excluded.length)recurrence.push(line('EXDATE',excluded));
    // Serialization-only differences must not provoke a recurring-master rewrite.
-   const unchanged=recurrence.length===old.recurrence!.length&&sameRecurrence(recurrence,old.recurrence!);
+   const candidateDates=recurrenceDates(recurrence,old.start!.timeZone!);
+   const sameInstants=(a:number[],b:number[])=>JSON.stringify([...new Set(a)].sort((a,b)=>a-b))===JSON.stringify([...new Set(b)].sort((a,b)=>a-b));
+   const unchanged=sameRecurrence(recurrence.filter(l=>l.startsWith('RRULE:')),old.recurrence!.filter(l=>l.startsWith('RRULE:')))&&sameInstants(candidateDates.RDATE,dates.RDATE)&&sameInstants(candidateDates.EXDATE,dates.EXDATE);
    master={summary:old.summary??'',...(old.location?{location:old.location}:{}),start:old.start!,end:old.end!,status:'confirmed',transparency:'opaque',visibility:'private',reminders:{useDefault:false},extendedProperties:{private:{icsSync:'v1',source:source.id,key:input.key,calendar:source.calendarId}},recurrence:unchanged?old.recurrence:recurrence};
   }else{const start=DateTime.fromMillis(first!,{zone:incoming!.start.timeZone});master={...structuredClone(incoming!),start:{dateTime:start.toISO()!,timeZone:start.zoneName!},end:{dateTime:start.plus({milliseconds:duration}).toISO()!,timeZone:start.zoneName!},recurrence:[line('RDATE',[...desired.keys()])]};}
   master=stampFingerprint({...master,extendedProperties:{private:{...master.extendedProperties.private,key:input.key}}},source.rules);const root:Item={key:input.key,cancel:false,event:master};
