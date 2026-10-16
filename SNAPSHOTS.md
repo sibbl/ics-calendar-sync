@@ -2,6 +2,8 @@
 
 Defaults remain folder aggregation and keep. A folder snapshot reads exactly the configured basename (for example `weekly.ics`); other direct ICS files are not merged. No newest-file/mtime guessing. Replace the published file atomically, then preview the new version.
 
+The source status reports the number of other direct ICS files that were not read (`stats.filesIgnored`), including after automatic syncs. A successful result describes the selected snapshot only; it does not claim those other exports were imported or determine which export is newest. To import a different export, explicitly change `snapshotFile`, preview and confirm that exact version. Existing approval never authorizes the newly selected bytes/configuration.
+
 ## Explicit authority
 
 Unknown scope never infers missing-event cancellation. Full scope means the owner confirms the export covers the entire logical source. Window scope requires configured start date, exclusive end date and IANA timezone. A local calendar week uses local midnight to the following week's midnight, including DST; bounds are never inferred from event minimum/maximum or assumed Outlook metadata.
