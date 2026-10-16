@@ -136,3 +136,5 @@ Rollout: review and merge the PR, publish the release, deploy preview-only with 
 private backup, explicitly enable the new strategy for the intended source, inspect
 the exact preview and only then restore its single existing writer. No default
 configuration or running installation is automatically changed by these options.
+
+Equivalent server date-list serialization (split RDATE/EXDATE lines or explicit TZID instead of UTC) is retained after instant-set comparison. This prevents repeat master writes without accepting changed occurrence dates or altering protected outside-window recurrence.
