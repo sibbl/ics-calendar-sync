@@ -2,6 +2,8 @@ import {DateTime} from 'luxon';
 import {it,expect} from 'vitest';
 import {parseCalendar} from '../server/calendar';
 import {preserveClippedSeries} from '../server/clipped-series';
+import {previewSnapshot} from '../server/snapshot-preview';
+import {clipScope} from '../server/clip-window';
 import {windowOccurrences} from '../server/window-recurrence';
 import {syncPlan} from '../server/google';
 import {sourceSchema} from '../shared/contracts';
@@ -21,8 +23,8 @@ it('reconciles monthly clock and duration changes without changing master times 
 it('suppresses a missing owned series only inside the snapshot window',()=>{const {p,target}=fixture();p.items=[];const plan=preserveClippedSeries(p,source,[target]);const old=windowOccurrences(target,Date.parse('2044-12-01T00:00:00Z')).effective,next=windowOccurrences(plan.items[0].event!,Date.parse('2044-12-01T00:00:00Z')).effective;expect(next.length).toBe(old.length-2);expect(next.every(ms=>ms<Date.parse(p.clipWindow!.start)||ms>=Date.parse(p.clipWindow!.end))).toBe(true);});
 it('bounds newly introduced series to this window, then repeats without writes',async()=>{const {p}=fixture(),plan=preserveClippedSeries(p,source,[]),root=plan.items.find(i=>!i.parent)!;expect(root.event!.recurrence).toHaveLength(1);expect(root.event!.recurrence![0]).toMatch(/^RDATE:/);const g=new FakeGoogle();await syncPlan(plan,source,g);const count=g.calls.length;await syncPlan(preserveClippedSeries(p,source,[...g.events.values()]),source,g);expect(g.calls).toHaveLength(count);});
 it('retains explicit exception time and duration instead of restoring the base slot',()=>{const {p,target}=fixture();const child='UID:invented-solar@example.invalid\r\nRECURRENCE-ID;TZID=Europe/Berlin:20440307T092000\r\nDTSTART;TZID=Europe/Berlin:20440309T113000\r\nDURATION:PT25M';const parsed=parseCalendar(ics([master.replaceAll('20440201','20440307').replaceAll('T074500','T092000').replaceAll('T083000','T104000').replace('COUNT=8','COUNT=7'),child]),SID,{},source.calendarId);parsed.clipWindow=p.clipWindow;const plan=preserveClippedSeries(parsed,source,[target]);const moved=plan.items.find(i=>i.parent&&i.event!.start.dateTime?.includes('2044-03-09'))!;expect(moved).toBeTruthy();expect(Date.parse(moved.event!.end.dateTime!)-Date.parse(moved.event!.start.dateTime!)).toBe(25*60000);});
-it('stops before writes on foreign ownership, changed migration ETags and boundary-crossing overrides',async()=>{const {p,target}=fixture();expect(()=>preserveClippedSeries(p,source,[{...target,extendedProperties:{private:{...target.extendedProperties.private,source:'foreign'}}}])).toThrow();const plan=preserveClippedSeries(p,source,[target]),g=new FakeGoogle();g.events.set(target.id,{...target,etag:'drift'});await expect(syncPlan(plan,source,g)).rejects.toThrow();expect(g.calls).toEqual([]);
- const ms=Date.parse('2044-03-07T08:20:00Z'),oldChild={id:'invented-child',recurringEventId:target.id,etag:'child',originalStartTime:{dateTime:new Date(ms).toISOString(),timeZone:'UTC'},start:{dateTime:'2044-05-01T12:00:00Z',timeZone:'UTC'},end:{dateTime:'2044-05-01T13:00:00Z',timeZone:'UTC'},extendedProperties:{private:{...target.extendedProperties.private,key:'invented-child'}}};expect(()=>preserveClippedSeries(p,source,[target,oldChild])).toThrow();});
+it('stops on foreign ownership and changed migration ETags but protects boundary-crossing overrides',async()=>{const {p,target}=fixture();expect(()=>preserveClippedSeries(p,source,[{...target,extendedProperties:{private:{...target.extendedProperties.private,source:'foreign'}}}])).toThrow();const plan=preserveClippedSeries(p,source,[target]),g=new FakeGoogle();g.events.set(target.id,{...target,etag:'drift'});await expect(syncPlan(plan,source,g)).rejects.toThrow();expect(g.calls).toEqual([]);
+ const ms=Date.parse('2044-03-07T08:20:00Z'),oldChild={id:'invented-child',recurringEventId:target.id,etag:'child',originalStartTime:{dateTime:new Date(ms).toISOString(),timeZone:'UTC'},start:{dateTime:'2044-05-01T12:00:00Z',timeZone:'UTC'},end:{dateTime:'2044-05-01T13:00:00Z',timeZone:'UTC'},extendedProperties:{private:{...target.extendedProperties.private,key:'invented-child'}}};const protectedPlan=preserveClippedSeries(p,source,[target,oldChild]);expect(protectedPlan.items).toEqual([]);expect(protectedPlan.protectedMasterKeys).toContain(target.id);expect(protectedPlan.stats.quarantinedSeries).toBe(1);});
 it('expands daily, monthly ordinal and yearly rules with bounded UTC UNTIL and DST-safe local time',()=>{for(const rule of ['FREQ=DAILY;COUNT=3','FREQ=MONTHLY;COUNT=3;BYDAY=1MO','FREQ=YEARLY;COUNT=3']){const result=windowOccurrences({start:{dateTime:'2044-02-01T07:45:00+01:00',timeZone:'Europe/Berlin'},recurrence:['RRULE:'+rule]},Date.parse('2047-01-01T00:00:00Z'));expect(result.effective).toHaveLength(3);}expect(windowOccurrences({start:{dateTime:'2044-03-25T07:45:00+01:00',timeZone:'Europe/Berlin'},recurrence:['RRULE:FREQ=DAILY;UNTIL=20440328T054500Z']},Date.parse('2044-04-01T00:00:00Z')).effective.length).toBe(4);});
 
 it('cancels obsolete owned overrides within the window and binds their ETags before writes',async()=>{
@@ -30,7 +32,7 @@ it('cancels obsolete owned overrides within the window and binds their ETags bef
  const plan=preserveClippedSeries(p,source,[target,current]),cancel=plan.items.find(i=>i.cancel)!;expect(cancel.approvedCancelEtag).toBe(current.etag);const g=new FakeGoogle();g.events.set(target.id,target);g.events.set(current.id,current);await syncPlan(plan,source,g);expect(g.events.get(current.id)?.status).toBe('cancelled');
  const changed=new FakeGoogle();changed.events.set(target.id,target);changed.events.set(current.id,{...current,etag:'changed'});await expect(syncPlan(plan,source,changed)).rejects.toThrow('Fensterinstanz');expect(changed.calls).toEqual([]);
 });
-it('stops when a desired occurrence touches a protected boundary rather than erasing a shorter old slot',()=>{const {p,target}=fixture();p.clipWindow!.end='2044-03-07T09:40:00.000Z';expect(()=>preserveClippedSeries(p,source,[target])).toThrow();});
+it('protects the whole series when a desired occurrence touches a protected boundary',()=>{const {p,target}=fixture();p.clipWindow!.end='2044-03-07T09:40:00.000Z';const plan=preserveClippedSeries(p,source,[target]);expect(plan.items).toEqual([]);expect(plan.protectedMasterKeys).toContain(target.id);});
 it('rejects DST ambiguity, unsupported high-frequency rules and excessive horizons',()=>{
  expect(()=>windowOccurrences({start:{dateTime:'2044-02-01T07:45:00Z',timeZone:'UTC'},recurrence:['RRULE:FREQ=MINUTELY;COUNT=3']},Date.parse('2044-03-01T00:00:00Z'))).toThrow();
  expect(()=>windowOccurrences({start:{dateTime:'1900-01-01T07:45:00Z',timeZone:'UTC'},recurrence:['RRULE:FREQ=DAILY']},Date.parse('2044-03-01T00:00:00Z'))).toThrow();
@@ -60,4 +62,28 @@ it('retains equivalent Google-normalized RDATE/EXDATE lines without repeated mas
  incoming.end={dateTime:DateTime.fromISO(incoming.end.dateTime!).plus({minutes:5}).toISO()!,timeZone:'Europe/Berlin'};
  const next=preserveClippedSeries(changed,source,[...g.events.values()]);
  expect(next.items.find(i=>!i.parent)!.clipSeriesEtag).toBeTruthy();
+});
+
+
+it.each([
+ ['20440201T074500','20440309T113000'],
+ ['20440307T074500','20440227T113000'],
+])('protects incoming cross-boundary exceptions without blocking independent events (%s)',async(original,moved)=>{
+ const {p:window,target}=fixture();
+ const child=`UID:invented-solar@example.invalid\r\nRECURRENCE-ID;TZID=Europe/Berlin:${original}\r\nDTSTART;TZID=Europe/Berlin:${moved}\r\nDURATION:PT25M`;
+ const single='UID:independent-clock@example.invalid\r\nDTSTART;TZID=Europe/Berlin:20440312T100000\r\nDURATION:PT30M\r\nSUMMARY:Invented independent visit';
+ const p=parseCalendar(ics([master,child,single]),SID,{},source.calendarId);p.clipWindow=window.clipWindow;
+ const current={id:'invented-protected-child',recurringEventId:target.id,etag:'invented-protected-etag',originalStartTime:{dateTime:'2044-03-07T06:45:00Z',timeZone:'UTC'},start:{dateTime:'2044-03-09T11:00:00Z',timeZone:'UTC'},end:{dateTime:'2044-03-09T11:30:00Z',timeZone:'UTC'},extendedProperties:{private:{...target.extendedProperties.private,key:'invented-protected-key'}}};
+ const plan=preserveClippedSeries(p,source,[target,current]);
+ expect(plan.items).toHaveLength(1);expect(plan.items[0].parent).toBeUndefined();expect(plan.protectedMasterKeys).toContain(target.id);expect(plan.stats.quarantinedSeries).toBe(1);expect(plan.warnings.some(w=>w.includes('Grenzkonflikten'))).toBe(true);
+ const preview=previewSnapshot(plan,source,[target,current],clipScope(plan,source));expect(preview.proposedRemovals).toEqual([]);expect(preview.proposedRestores).toEqual([]);expect(preview.protectedAbsent).toBe(2);
+ const g=new FakeGoogle();g.events.set(target.id,target);g.events.set(current.id,current);
+ const first=await syncPlan(plan,source,g);expect(first.upserted).toBe(1);expect(g.events.get(target.id)).toEqual(target);expect(g.events.get(current.id)).toEqual(current);
+ const count=g.calls.length;const repeated=await syncPlan(preserveClippedSeries(p,source,[...g.events.values()]),source,g);expect(repeated.upserted).toBe(0);expect(g.calls).toHaveLength(count);
+});
+it('discards already staged override cancellations when a later instance crosses the boundary',()=>{
+ const {p,target}=fixture();
+ const obsolete={id:'invented-obsolete',recurringEventId:target.id,etag:'invented-obsolete-etag',originalStartTime:{dateTime:'2044-03-07T06:45:00Z',timeZone:'UTC'},start:{dateTime:'2044-03-09T11:00:00Z',timeZone:'UTC'},end:{dateTime:'2044-03-09T11:30:00Z',timeZone:'UTC'},extendedProperties:{private:{...target.extendedProperties.private,key:'invented-obsolete-key'}}};
+ const crossing={...obsolete,id:'invented-crossing',originalStartTime:{dateTime:'2044-04-04T05:45:00Z',timeZone:'UTC'},start:{dateTime:'2044-05-02T11:00:00Z',timeZone:'UTC'},end:{dateTime:'2044-05-02T11:30:00Z',timeZone:'UTC'},extendedProperties:{private:{...target.extendedProperties.private,key:'invented-crossing-key'}}};
+ const plan=preserveClippedSeries(p,source,[target,obsolete,crossing]);expect(plan.items).toEqual([]);expect(plan.protectedMasterKeys).toContain(target.id);expect(plan.stats.explicitCancellations).toBe(0);
 });

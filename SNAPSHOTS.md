@@ -138,3 +138,7 @@ the exact preview and only then restore its single existing writer. No default
 configuration or running installation is automatically changed by these options.
 
 Equivalent server date-list serialization (split RDATE/EXDATE lines or explicit TZID instead of UTC) is retained after instant-set comparison. This prevents repeat master writes without accepting changed occurrence dates or altering protected outside-window recurrence.
+
+### Grenzkonflikte bei Serien
+
+Im Modus `window-reconcile` bleibt bei einem Grenzkonflikt die gesamte betroffene Serie einschließlich vorhandener Ausnahmen unverändert. Sie wird als geschützte Serie gezählt; für sie werden weder Änderungen noch Absagen oder Wiederherstellungen aus fehlenden Ausnahmen geplant. Unabhängige Termine und andere sicher abgleichbare Serien werden weiter importiert. Ein vollständigerer Export kann den Grenzkonflikt später auflösen. Eigentums-, ETag-, Zeitzonen- und Wiederholungsvalidierungen bleiben erhalten.
