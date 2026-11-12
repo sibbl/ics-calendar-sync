@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=22"
-  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:server": "tsx server/index.ts",
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.server.json",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:report": "vitest run --reporter=default --reporter=junit --outputFile=reports/vitest.xml",
@@ -49,6 +49,8 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.4",
     "jsdom": "27.4.0",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.93.0",
     "tailwindcss": "4.2.1",
     "tsx": "4.21.0",
     "typescript": "5.9.3",
@@ -60,5 +62,8 @@
     "@rollup/rollup-darwin-arm64": "4.63.6",
     "@tailwindcss/oxide-darwin-arm64": "4.2.1",
     "lightningcss-darwin-arm64": "1.31.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -1,72 +1,591 @@
-import {it,expect,vi} from 'vitest';
-import {promises as fs} from 'node:fs';import path from 'node:path';import os from 'node:os';
-import {Runtime} from '../server/runtime';import {DataStore} from '../server/data-store';import {loadSource} from '../server/sources';import {cleanupFiles} from '../server/file-cleanup';import {sourceSchema} from '../shared/contracts';
-import {CONFIG,SOURCE,SID,BASE,MASTER,EX,ics,FakeGoogle} from './fixtures';
-import {GoogleRequestError} from '../server/google-request-error';
-async function fixture(run:(a:any)=>Promise<void>,mode:'keep'|'archive'|'delete'='keep'){const root=await fs.mkdtemp(path.join(os.tmpdir(),'synthetic-snapshot-')),input=path.join(root,'inputs'),data=path.join(root,'data');await fs.mkdir(input);await fs.mkdir(data,{mode:0o700});const source=sourceSchema.parse({...SOURCE,kind:'folder',location:'.',folderMode:'snapshot',snapshotFile:'weekly.ics',snapshotScope:{authority:'window',window:{start:'2026-03-23',end:'2026-03-30',timezone:'Europe/Berlin'}},fileHandling:mode,immutableFilesConfirmed:mode!=='keep',enabled:true,intervalSeconds:60,calendarId:'synthetic-target'});const g=Object.assign(new FakeGoogle(),{listCalendars:async()=>[{id:'synthetic-target',summary:'Synthetic',accessRole:'owner' as const,writable:true,primary:false}],listManagedEvents:async()=>structuredClone([...g.events.values()]),forCalendar:()=>g});const config={...CONFIG,clientId:'synthetic-client',clientSecret:'synthetic-secret',refreshToken:'synthetic-refresh',writes:true,calendarId:'synthetic-target',watchRoot:input,dataDir:data,sources:[source]};const runtime=()=>new Runtime(config,{google:g,logger:()=>{}});const r=runtime();try{await run({root,input,data,source,g,r,runtime,config,file:path.join(input,'weekly.ics')});}finally{await r.close();await fs.rm(root,{recursive:true,force:true});}}
-async function approve(r:Runtime,emptyConfirmed=false){const p:any=await r.execute(SID);return r.execute(SID,true,undefined,{token:p.snapshotPreview.token,emptyConfirmed});}
-it('only reads the explicit snapshot file; ignored older exports never aggregate',async()=>fixture(async({file,input,r})=>{await fs.writeFile(file,ics([BASE]));await fs.writeFile(path.join(input,'old.ics'),ics([BASE.replace('UID:synthetic-uid','UID:old-synthetic')]));const p:any=await r.execute(SID);expect(p.items).toHaveLength(1);expect(p.stats.files).toBe(1);expect(p.warnings.join()).toContain('weitere ICS-Dateien');await approve(r);}));
-it('unknown scope adds/updates but never cancels missing UIDs',async()=>fixture(async({file,r,g})=>{r.sources[0].snapshotScope={authority:'unknown'};await fs.writeFile(file,ics([BASE]));await approve(r);await fs.writeFile(file,ics([BASE.replace('UID:synthetic-uid','UID:new-synthetic')]));await approve(r);expect([...g.events.values()].every((e:any)=>e.status==='confirmed')).toBe(true);}));
-it('weekly replacement adds updates and cancels only missing owned events in the confirmed window',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE,BASE.replace('UID:synthetic-uid','UID:second-synthetic')]));await approve(r);await fs.writeFile(file,ics([BASE.replace('20260323T100000','20260323T120000').replace('20260323T110000','20260323T130000'),BASE.replace('UID:synthetic-uid','UID:new-synthetic')]));const p:any=await r.execute(SID);expect(p.snapshotPreview).toMatchObject({added:1,changed:1,proposedRemovals:expect.any(Array)});expect(p.snapshotPreview.proposedRemovals).toHaveLength(1);await r.execute(SID,true,undefined,{token:p.snapshotPreview.token});expect([...g.events.values()].filter((e:any)=>e.status==='cancelled')).toHaveLength(1);}));
-it('empty confirmed week needs separate confirmation and never clears outside-window events',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE,BASE.replace('UID:synthetic-uid','UID:outside-synthetic').replaceAll('20260323','20260406')]));await approve(r);await fs.writeFile(file,ics([]));const p:any=await r.execute(SID);expect(p.snapshotPreview.proposedRemovals).toHaveLength(1);await expect(r.execute(SID,true,undefined,{token:p.snapshotPreview.token})).rejects.toThrow('leer');await r.execute(SID,true,undefined,{token:p.snapshotPreview.token,emptyConfirmed:true});expect([...g.events.values()].filter((e:any)=>e.status==='confirmed')).toHaveLength(1);}));
-it('new or changed bytes invalidate preview approval before any mutation',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE]));const p:any=await r.execute(SID);await fs.writeFile(file,ics([BASE.replace('synthetic-uid','changed-synthetic')]));await expect(r.execute(SID,true,undefined,{token:p.snapshotPreview.token})).rejects.toThrow('Snapshot geändert');expect(g.calls).toHaveLength(0);}));
-it('unconfirmed automatic snapshot runs retain inputs and write nothing',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE]));await r.tick();expect(g.calls).toHaveLength(0);expect(r.statuses[SID].error).toContain('bestätigte Vorschau');expect(await fs.stat(file)).toBeTruthy();},'delete'));
-it('successful delete consumes only imported input; empty inbox does not cancel imported targets',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE]));await approve(r);await expect(fs.stat(file)).rejects.toMatchObject({code:'ENOENT'});const result:any=await r.execute(SID,true);expect(result.cancelled).toBe(0);expect([...g.events.values()][0].status).toBe('confirmed');},'delete'));
-it('successful archive retains bytes privately outside direct-file discovery',async()=>fixture(async({file,input,r})=>{const bytes=ics([BASE]);await fs.writeFile(file,bytes);await approve(r);const archive=path.join(input,'.ics-sync-archive',SID),names=await fs.readdir(archive);expect(names).toHaveLength(1);expect(await fs.readFile(path.join(archive,names[0]))).toEqual(Buffer.from(bytes));},'archive'));
-it('partial quota failure retains input and restart resumes approved bytes without repeating first success',async()=>fixture(async({file,r,runtime,g})=>{await fs.writeFile(file,ics([BASE,BASE.replace('UID:synthetic-uid','UID:second-synthetic')]));const original=g.write.bind(g);let quota=true;g.write=async(...args:Parameters<FakeGoogle['write']>)=>{if(quota&&g.calls.length===1){const e=new GoogleRequestError(403,'events.insert','POST','rateLimitExceeded','quota');e.retryAt=Date.now()+600000;throw e;}return original(...args);};await expect(approve(r)).rejects.toThrow('rateLimitExceeded');expect(await fs.stat(file)).toBeTruthy();expect(g.calls).toHaveLength(1);await r.close();quota=false;const second=runtime();try{const result:any=await second.execute(SID,true);expect(result.unchanged).toBe(1);expect(g.calls).toHaveLength(2);await expect(fs.stat(file)).rejects.toMatchObject({code:'ENOENT'});}finally{await second.close();}},'delete'));
-it('invalid/truncated export cannot import or consume',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n');await expect(r.execute(SID)).rejects.toThrow();expect(g.calls).toHaveLength(0);expect(await fs.readFile(file,'utf8')).toContain('BEGIN:VEVENT');},'delete'));
-it('recurrence structure or EXDATE changes stop before cleanup',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([MASTER]));await approve(r);await fs.writeFile(file,ics([MASTER+'\r\nEXDATE:20260330T080000Z']));const p:any=await r.execute(SID);const before=g.calls.length;await expect(r.execute(SID,true,undefined,{token:p.snapshotPreview.token})).rejects.toThrow('Serienstruktur');expect(g.calls).toHaveLength(before);expect(await fs.stat(file)).toBeTruthy();},'delete'));
-it('file changed before cleanup is retained; replacement racing claim is restored untouched',async()=>fixture(async({file,input,data,source})=>{await fs.writeFile(file,ics([BASE]));const plan=await loadSource(source,input,new Map());const store=new DataStore(data),state=await store.read(SID);let changed=false;const replacement=ics([BASE.replace('UID:synthetic-uid','UID:racing-synthetic')]);const counts=await cleanupFiles(input,source,store,state,'synthetic-signature',plan.inputFiles,{beforeClaim:async()=>{if(!changed){changed=true;const temp=file+'.tmp';await fs.writeFile(temp,replacement);await fs.rename(temp,file);}}});expect(counts.filesDeleted).toBe(0);expect(counts.filesRetained).toBe(1);expect(await fs.readFile(file)).toEqual(Buffer.from(replacement));},'delete'));
-it('protected state uses private files and atomic versioned updates; invalid state fails closed',async()=>fixture(async({data})=>{const store=new DataStore(data);await store.write({version:1,source:SID});expect((await fs.stat(path.join(data,SID+'.json'))).mode&0o777).toBe(0o600);expect(await fs.readdir(data)).toEqual([SID+'.json']);await fs.writeFile(path.join(data,SID+'.json'),'{invalid');await expect(store.read(SID)).rejects.toThrow('Datenzustand');}));
-it('crash after protected claim resumes journal cleanup without rereading deleted input',async()=>fixture(async({file,input,data,source})=>{await fs.writeFile(file,ics([BASE]));const p=await loadSource(source,input,new Map()),store=new DataStore(data),state=await store.read(SID),write=store.write.bind(store);let saves=0;vi.spyOn(store,'write').mockImplementation(async s=>{saves++;if(saves===2||saves===3)throw Error('Synthetic crash');return write(s);});await expect(cleanupFiles(input,source,store,state,'synthetic-signature',p.inputFiles)).rejects.toThrow();const recoveredStore=new DataStore(data),recovered=await recoveredStore.read(SID);const counts=await cleanupFiles(input,source,recoveredStore,recovered,'synthetic-signature');expect(counts.filesDeleted).toBe(1);await expect(fs.stat(file)).rejects.toMatchObject({code:'ENOENT'});expect((await recoveredStore.read(SID)).cleanup!.records[0].phase).toBe('done');},'delete'));
-it('aggregate batch retains every input after partial target failure',async()=>fixture(async({file,input,r,g})=>{r.sources[0].folderMode='aggregate';await fs.writeFile(file,ics([BASE]));const other=path.join(input,'second.ics');await fs.writeFile(other,ics([BASE.replace('UID:synthetic-uid','UID:second-synthetic')]));g.failAt=2;await expect(r.execute(SID,true)).rejects.toThrow();expect(await fs.stat(file)).toBeTruthy();expect(await fs.stat(other)).toBeTruthy();},'delete'));
-it('no cleanup can follow a symlink outside the selected folder',async()=>fixture(async({file,root,r,g})=>{const external=path.join(root,'external.ics');await fs.writeFile(external,ics([BASE]));await fs.symlink(external,file);await expect(r.execute(SID)).rejects.toThrow();expect(g.calls).toHaveLength(0);expect(await fs.readFile(external)).toEqual(Buffer.from(ics([BASE])));},'delete'));
-it('revoked cleanup permission during claim leaves the producer input intact',async()=>fixture(async({file,input,data,source})=>{await fs.writeFile(file,ics([BASE]));const p=await loadSource(source,input,new Map()),store=new DataStore(data),state=await store.read(SID);let allowed=true;const counts=await cleanupFiles(input,source,store,state,'synthetic-signature',p.inputFiles,{shouldContinue:()=>allowed,beforeClaim:async()=>{allowed=false;}});expect(counts.filesDeleted).toBe(0);expect(await fs.readFile(file)).toEqual(Buffer.from(ics([BASE])));},'delete'));
-it('manual target drift between preview and confirmation prevents destructive reconciliation',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE]));await approve(r);await fs.writeFile(file,ics([]));const p:any=await r.execute(SID);const current=[...g.events.values()][0];current.etag='synthetic-changed-etag';const count=g.calls.length;await expect(r.execute(SID,true,undefined,{token:p.snapshotPreview.token,emptyConfirmed:true})).rejects.toThrow('Vorschau erneuern');expect(g.calls).toHaveLength(count);expect(current.status).toBe('confirmed');}));
+import { it, expect, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { Runtime } from "../server/runtime";
+import { DataStore } from "../server/data-store";
+import { loadSource } from "../server/sources";
+import { cleanupFiles } from "../server/file-cleanup";
+import { sourceSchema } from "../shared/contracts";
+import { CONFIG, SOURCE, SID, BASE, MASTER, EX, ics, FakeGoogle } from "./fixtures";
+import { GoogleRequestError } from "../server/google-request-error";
+async function fixture(
+  run: (a: any) => Promise<void>,
+  mode: "keep" | "archive" | "delete" = "keep",
+) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "synthetic-snapshot-")),
+    input = path.join(root, "inputs"),
+    data = path.join(root, "data");
+  await fs.mkdir(input);
+  await fs.mkdir(data, { mode: 0o700 });
+  const source = sourceSchema.parse({
+    ...SOURCE,
+    kind: "folder",
+    location: ".",
+    folderMode: "snapshot",
+    snapshotFile: "weekly.ics",
+    snapshotScope: {
+      authority: "window",
+      window: { start: "2026-03-23", end: "2026-03-30", timezone: "Europe/Berlin" },
+    },
+    fileHandling: mode,
+    immutableFilesConfirmed: mode !== "keep",
+    enabled: true,
+    intervalSeconds: 60,
+    calendarId: "synthetic-target",
+  });
+  const g = Object.assign(new FakeGoogle(), {
+    listCalendars: async () => [
+      {
+        id: "synthetic-target",
+        summary: "Synthetic",
+        accessRole: "owner" as const,
+        writable: true,
+        primary: false,
+      },
+    ],
+    listManagedEvents: async () => structuredClone([...g.events.values()]),
+    forCalendar: () => g,
+  });
+  const config = {
+    ...CONFIG,
+    clientId: "synthetic-client",
+    clientSecret: "synthetic-secret",
+    refreshToken: "synthetic-refresh",
+    writes: true,
+    calendarId: "synthetic-target",
+    watchRoot: input,
+    dataDir: data,
+    sources: [source],
+  };
+  const runtime = () => new Runtime(config, { google: g, logger: () => {} });
+  const r = runtime();
+  try {
+    await run({
+      root,
+      input,
+      data,
+      source,
+      g,
+      r,
+      runtime,
+      config,
+      file: path.join(input, "weekly.ics"),
+    });
+  } finally {
+    await r.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+async function approve(r: Runtime, emptyConfirmed = false) {
+  const p: any = await r.execute(SID);
+  return r.execute(SID, true, undefined, { token: p.snapshotPreview.token, emptyConfirmed });
+}
+it("only reads the explicit snapshot file; ignored older exports never aggregate", async () =>
+  fixture(async ({ file, input, r }) => {
+    await fs.writeFile(file, ics([BASE]));
+    await fs.writeFile(
+      path.join(input, "old.ics"),
+      ics([BASE.replace("UID:synthetic-uid", "UID:old-synthetic")]),
+    );
+    const p: any = await r.execute(SID);
+    expect(p.items).toHaveLength(1);
+    expect(p.stats.files).toBe(1);
+    expect(p.warnings.join()).toContain("weitere ICS-Dateien");
+    await approve(r);
+  }));
+it("unknown scope adds/updates but never cancels missing UIDs", async () =>
+  fixture(async ({ file, r, g }) => {
+    r.sources[0].snapshotScope = { authority: "unknown" };
+    await fs.writeFile(file, ics([BASE]));
+    await approve(r);
+    await fs.writeFile(file, ics([BASE.replace("UID:synthetic-uid", "UID:new-synthetic")]));
+    await approve(r);
+    expect([...g.events.values()].every((e: any) => e.status === "confirmed")).toBe(true);
+  }));
+it("weekly replacement adds updates and cancels only missing owned events in the confirmed window", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(
+      file,
+      ics([BASE, BASE.replace("UID:synthetic-uid", "UID:second-synthetic")]),
+    );
+    await approve(r);
+    await fs.writeFile(
+      file,
+      ics([
+        BASE.replace("20260323T100000", "20260323T120000").replace(
+          "20260323T110000",
+          "20260323T130000",
+        ),
+        BASE.replace("UID:synthetic-uid", "UID:new-synthetic"),
+      ]),
+    );
+    const p: any = await r.execute(SID);
+    expect(p.snapshotPreview).toMatchObject({
+      added: 1,
+      changed: 1,
+      proposedRemovals: expect.any(Array),
+    });
+    expect(p.snapshotPreview.proposedRemovals).toHaveLength(1);
+    await r.execute(SID, true, undefined, { token: p.snapshotPreview.token });
+    expect([...g.events.values()].filter((e: any) => e.status === "cancelled")).toHaveLength(1);
+  }));
+it("empty confirmed week needs separate confirmation and never clears outside-window events", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(
+      file,
+      ics([
+        BASE,
+        BASE.replace("UID:synthetic-uid", "UID:outside-synthetic").replaceAll(
+          "20260323",
+          "20260406",
+        ),
+      ]),
+    );
+    await approve(r);
+    await fs.writeFile(file, ics([]));
+    const p: any = await r.execute(SID);
+    expect(p.snapshotPreview.proposedRemovals).toHaveLength(1);
+    await expect(
+      r.execute(SID, true, undefined, { token: p.snapshotPreview.token }),
+    ).rejects.toThrow("leer");
+    await r.execute(SID, true, undefined, { token: p.snapshotPreview.token, emptyConfirmed: true });
+    expect([...g.events.values()].filter((e: any) => e.status === "confirmed")).toHaveLength(1);
+  }));
+it("new or changed bytes invalidate preview approval before any mutation", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, ics([BASE]));
+    const p: any = await r.execute(SID);
+    await fs.writeFile(file, ics([BASE.replace("synthetic-uid", "changed-synthetic")]));
+    await expect(
+      r.execute(SID, true, undefined, { token: p.snapshotPreview.token }),
+    ).rejects.toThrow("Snapshot geändert");
+    expect(g.calls).toHaveLength(0);
+  }));
+it("unconfirmed automatic snapshot runs retain inputs and write nothing", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, ics([BASE]));
+    await r.tick();
+    expect(g.calls).toHaveLength(0);
+    expect(r.statuses[SID].error).toContain("bestätigte Vorschau");
+    expect(await fs.stat(file)).toBeTruthy();
+  }, "delete"));
+it("successful delete consumes only imported input; empty inbox does not cancel imported targets", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, ics([BASE]));
+    await approve(r);
+    await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    const result: any = await r.execute(SID, true);
+    expect(result.cancelled).toBe(0);
+    expect([...g.events.values()][0].status).toBe("confirmed");
+  }, "delete"));
+it("successful archive retains bytes privately outside direct-file discovery", async () =>
+  fixture(async ({ file, input, r }) => {
+    const bytes = ics([BASE]);
+    await fs.writeFile(file, bytes);
+    await approve(r);
+    const archive = path.join(input, ".ics-sync-archive", SID),
+      names = await fs.readdir(archive);
+    expect(names).toHaveLength(1);
+    expect(await fs.readFile(path.join(archive, names[0]))).toEqual(Buffer.from(bytes));
+  }, "archive"));
+it("partial quota failure retains input and restart resumes approved bytes without repeating first success", async () =>
+  fixture(async ({ file, r, runtime, g }) => {
+    await fs.writeFile(
+      file,
+      ics([BASE, BASE.replace("UID:synthetic-uid", "UID:second-synthetic")]),
+    );
+    const original = g.write.bind(g);
+    let quota = true;
+    g.write = async (...args: Parameters<FakeGoogle["write"]>) => {
+      if (quota && g.calls.length === 1) {
+        const e = new GoogleRequestError(
+          403,
+          "events.insert",
+          "POST",
+          "rateLimitExceeded",
+          "quota",
+        );
+        e.retryAt = Date.now() + 600000;
+        throw e;
+      }
+      return original(...args);
+    };
+    await expect(approve(r)).rejects.toThrow("rateLimitExceeded");
+    expect(await fs.stat(file)).toBeTruthy();
+    expect(g.calls).toHaveLength(1);
+    await r.close();
+    quota = false;
+    const second = runtime();
+    try {
+      const result: any = await second.execute(SID, true);
+      expect(result.unchanged).toBe(1);
+      expect(g.calls).toHaveLength(2);
+      await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await second.close();
+    }
+  }, "delete"));
+it("invalid/truncated export cannot import or consume", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n");
+    await expect(r.execute(SID)).rejects.toThrow();
+    expect(g.calls).toHaveLength(0);
+    expect(await fs.readFile(file, "utf8")).toContain("BEGIN:VEVENT");
+  }, "delete"));
+it("recurrence structure or EXDATE changes stop before cleanup", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, ics([MASTER]));
+    await approve(r);
+    await fs.writeFile(file, ics([MASTER + "\r\nEXDATE:20260330T080000Z"]));
+    const p: any = await r.execute(SID);
+    const before = g.calls.length;
+    await expect(
+      r.execute(SID, true, undefined, { token: p.snapshotPreview.token }),
+    ).rejects.toThrow("Serienstruktur");
+    expect(g.calls).toHaveLength(before);
+    expect(await fs.stat(file)).toBeTruthy();
+  }, "delete"));
+it("file changed before cleanup is retained; replacement racing claim is restored untouched", async () =>
+  fixture(async ({ file, input, data, source }) => {
+    await fs.writeFile(file, ics([BASE]));
+    const plan = await loadSource(source, input, new Map());
+    const store = new DataStore(data),
+      state = await store.read(SID);
+    let changed = false;
+    const replacement = ics([BASE.replace("UID:synthetic-uid", "UID:racing-synthetic")]);
+    const counts = await cleanupFiles(
+      input,
+      source,
+      store,
+      state,
+      "synthetic-signature",
+      plan.inputFiles,
+      {
+        beforeClaim: async () => {
+          if (!changed) {
+            changed = true;
+            const temp = file + ".tmp";
+            await fs.writeFile(temp, replacement);
+            await fs.rename(temp, file);
+          }
+        },
+      },
+    );
+    expect(counts.filesDeleted).toBe(0);
+    expect(counts.filesRetained).toBe(1);
+    expect(await fs.readFile(file)).toEqual(Buffer.from(replacement));
+  }, "delete"));
+it("protected state uses private files and atomic versioned updates; invalid state fails closed", async () =>
+  fixture(async ({ data }) => {
+    const store = new DataStore(data);
+    await store.write({ version: 1, source: SID });
+    expect((await fs.stat(path.join(data, SID + ".json"))).mode & 0o777).toBe(0o600);
+    expect(await fs.readdir(data)).toEqual([SID + ".json"]);
+    await fs.writeFile(path.join(data, SID + ".json"), "{invalid");
+    await expect(store.read(SID)).rejects.toThrow("Datenzustand");
+  }));
+it("crash after protected claim resumes journal cleanup without rereading deleted input", async () =>
+  fixture(async ({ file, input, data, source }) => {
+    await fs.writeFile(file, ics([BASE]));
+    const p = await loadSource(source, input, new Map()),
+      store = new DataStore(data),
+      state = await store.read(SID),
+      write = store.write.bind(store);
+    let saves = 0;
+    vi.spyOn(store, "write").mockImplementation(async (s) => {
+      saves++;
+      if (saves === 2 || saves === 3) throw Error("Synthetic crash");
+      return write(s);
+    });
+    await expect(
+      cleanupFiles(input, source, store, state, "synthetic-signature", p.inputFiles),
+    ).rejects.toThrow();
+    const recoveredStore = new DataStore(data),
+      recovered = await recoveredStore.read(SID);
+    const counts = await cleanupFiles(
+      input,
+      source,
+      recoveredStore,
+      recovered,
+      "synthetic-signature",
+    );
+    expect(counts.filesDeleted).toBe(1);
+    await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await recoveredStore.read(SID)).cleanup!.records[0].phase).toBe("done");
+  }, "delete"));
+it("aggregate batch retains every input after partial target failure", async () =>
+  fixture(async ({ file, input, r, g }) => {
+    r.sources[0].folderMode = "aggregate";
+    await fs.writeFile(file, ics([BASE]));
+    const other = path.join(input, "second.ics");
+    await fs.writeFile(other, ics([BASE.replace("UID:synthetic-uid", "UID:second-synthetic")]));
+    g.failAt = 2;
+    await expect(r.execute(SID, true)).rejects.toThrow();
+    expect(await fs.stat(file)).toBeTruthy();
+    expect(await fs.stat(other)).toBeTruthy();
+  }, "delete"));
+it("no cleanup can follow a symlink outside the selected folder", async () =>
+  fixture(async ({ file, root, r, g }) => {
+    const external = path.join(root, "external.ics");
+    await fs.writeFile(external, ics([BASE]));
+    await fs.symlink(external, file);
+    await expect(r.execute(SID)).rejects.toThrow();
+    expect(g.calls).toHaveLength(0);
+    expect(await fs.readFile(external)).toEqual(Buffer.from(ics([BASE])));
+  }, "delete"));
+it("revoked cleanup permission during claim leaves the producer input intact", async () =>
+  fixture(async ({ file, input, data, source }) => {
+    await fs.writeFile(file, ics([BASE]));
+    const p = await loadSource(source, input, new Map()),
+      store = new DataStore(data),
+      state = await store.read(SID);
+    let allowed = true;
+    const counts = await cleanupFiles(
+      input,
+      source,
+      store,
+      state,
+      "synthetic-signature",
+      p.inputFiles,
+      {
+        shouldContinue: () => allowed,
+        beforeClaim: async () => {
+          allowed = false;
+        },
+      },
+    );
+    expect(counts.filesDeleted).toBe(0);
+    expect(await fs.readFile(file)).toEqual(Buffer.from(ics([BASE])));
+  }, "delete"));
+it("manual target drift between preview and confirmation prevents destructive reconciliation", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, ics([BASE]));
+    await approve(r);
+    await fs.writeFile(file, ics([]));
+    const p: any = await r.execute(SID);
+    const current = [...g.events.values()][0];
+    current.etag = "synthetic-changed-etag";
+    const count = g.calls.length;
+    await expect(
+      r.execute(SID, true, undefined, { token: p.snapshotPreview.token, emptyConfirmed: true }),
+    ).rejects.toThrow("Vorschau erneuern");
+    expect(g.calls).toHaveLength(count);
+    expect(current.status).toBe("confirmed");
+  }));
 
-it('final refresh drift outside the approved window prevents cancellation and cleanup',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE]));await approve(r);await fs.writeFile(file,ics([]));const preview:any=await r.execute(SID);const original=g.get.bind(g);g.get=async(id:string)=>{const current=await original(id);return current?{...current,etag:'synthetic-new-etag',start:{date:'2026-04-06'},end:{date:'2026-04-07'}}:null;};const before=g.calls.length;await expect(r.execute(SID,true,undefined,{token:preview.snapshotPreview.token,emptyConfirmed:true})).rejects.toThrow('Absageziel nach bestätigter Vorschau');expect(g.calls).toHaveLength(before);expect(await fs.readFile(file)).toEqual(Buffer.from(ics([])));expect([...g.events.values()][0].status).toBe('confirmed');},'delete'));
-async function clippedFixture(run:(args:any)=>Promise<void>){return fixture(async a=>{a.r.sources[0].clipSeriesMode='preserve-master';a.r.sources[0].snapshotScope=undefined;a.r.sources[0].snapshotClip={completeExportConfirmed:true,boundary:'protect-boundary',ordering:'manual-confirm'};const original=await import('../server/calendar');const p=original.parseCalendar(ics([MASTER.replace('COUNT=4','COUNT=8')]),SID,{},'synthetic-target');a.g.events.set(p.items[0].key,{id:p.items[0].key,...p.items[0].event,etag:'synthetic-series-etag'});await fs.writeFile(a.file,ics([MASTER.replaceAll('20260323','20260406').replace('COUNT=4','COUNT=6')+'\r\nEXDATE:20260413T080000Z'],'X-CLIPSTART:20260406T000000Z\r\nX-CLIPEND:20260518T000000Z\r\n'));await run(a);});}
-it('binds bounded series migration to the preview ETag before any writes',async()=>clippedFixture(async({r,g})=>{const p:any=await r.execute(SID);const current=[...g.events.values()][0];current.etag='synthetic-drift';await expect(r.execute(SID,true,undefined,{token:p.snapshotPreview.token,newerConfirmed:true})).rejects.toThrow('Serienziel nach Vorschau');expect(g.calls).toEqual([]);}));
-it('requires preview approval then preserves master and repeats without recurrence writes',async()=>clippedFixture(async({r,g})=>{await expect(r.execute(SID,true)).rejects.toThrow('Clip-Reihenfolge');expect(g.calls).toEqual([]);const p:any=await r.execute(SID);expect(p.stats.normalizedClipSeries).toBe(1);await r.execute(SID,true,undefined,{token:p.snapshotPreview.token,newerConfirmed:true});expect(g.calls).toHaveLength(1);expect(g.calls[0].body.start).toBeUndefined();expect(g.calls[0].body.recurrence[0]).toContain('COUNT=8');const count=g.calls.length;await r.execute(SID,true);expect(g.calls).toHaveLength(count);}));
+it("final refresh drift outside the approved window prevents cancellation and cleanup", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, ics([BASE]));
+    await approve(r);
+    await fs.writeFile(file, ics([]));
+    const preview: any = await r.execute(SID);
+    const original = g.get.bind(g);
+    g.get = async (id: string) => {
+      const current = await original(id);
+      return current
+        ? {
+            ...current,
+            etag: "synthetic-new-etag",
+            start: { date: "2026-04-06" },
+            end: { date: "2026-04-07" },
+          }
+        : null;
+    };
+    const before = g.calls.length;
+    await expect(
+      r.execute(SID, true, undefined, {
+        token: preview.snapshotPreview.token,
+        emptyConfirmed: true,
+      }),
+    ).rejects.toThrow("Absageziel nach bestätigter Vorschau");
+    expect(g.calls).toHaveLength(before);
+    expect(await fs.readFile(file)).toEqual(Buffer.from(ics([])));
+    expect([...g.events.values()][0].status).toBe("confirmed");
+  }, "delete"));
+async function clippedFixture(run: (args: any) => Promise<void>) {
+  return fixture(async (a) => {
+    a.r.sources[0].clipSeriesMode = "preserve-master";
+    a.r.sources[0].snapshotScope = undefined;
+    a.r.sources[0].snapshotClip = {
+      completeExportConfirmed: true,
+      boundary: "protect-boundary",
+      ordering: "manual-confirm",
+    };
+    const original = await import("../server/calendar");
+    const p = original.parseCalendar(
+      ics([MASTER.replace("COUNT=4", "COUNT=8")]),
+      SID,
+      {},
+      "synthetic-target",
+    );
+    a.g.events.set(p.items[0].key, {
+      id: p.items[0].key,
+      ...p.items[0].event,
+      etag: "synthetic-series-etag",
+    });
+    await fs.writeFile(
+      a.file,
+      ics(
+        [
+          MASTER.replaceAll("20260323", "20260406").replace("COUNT=4", "COUNT=6") +
+            "\r\nEXDATE:20260413T080000Z",
+        ],
+        "X-CLIPSTART:20260406T000000Z\r\nX-CLIPEND:20260518T000000Z\r\n",
+      ),
+    );
+    await run(a);
+  });
+}
+it("binds bounded series migration to the preview ETag before any writes", async () =>
+  clippedFixture(async ({ r, g }) => {
+    const p: any = await r.execute(SID);
+    const current = [...g.events.values()][0];
+    current.etag = "synthetic-drift";
+    await expect(
+      r.execute(SID, true, undefined, { token: p.snapshotPreview.token, newerConfirmed: true }),
+    ).rejects.toThrow("Serienziel nach Vorschau");
+    expect(g.calls).toEqual([]);
+  }));
+it("requires preview approval then preserves master and repeats without recurrence writes", async () =>
+  clippedFixture(async ({ r, g }) => {
+    await expect(r.execute(SID, true)).rejects.toThrow("Clip-Reihenfolge");
+    expect(g.calls).toEqual([]);
+    const p: any = await r.execute(SID);
+    expect(p.stats.normalizedClipSeries).toBe(1);
+    await r.execute(SID, true, undefined, { token: p.snapshotPreview.token, newerConfirmed: true });
+    expect(g.calls).toHaveLength(1);
+    expect(g.calls[0].body.start).toBeUndefined();
+    expect(g.calls[0].body.recurrence[0]).toContain("COUNT=8");
+    const count = g.calls.length;
+    await r.execute(SID, true);
+    expect(g.calls).toHaveLength(count);
+  }));
 
-it('binds disappeared exception restoration to fresh snapshot approval and ETags',async()=>fixture(async({file,r,g})=>{r.sources[0].snapshotScope={authority:'window',window:{start:'2026-03-01',end:'2026-05-01',timezone:'Europe/Berlin'}};await fs.writeFile(file,ics([MASTER,EX]));await approve(r);await fs.writeFile(file,ics([MASTER]));const count=g.calls.length;await expect(r.execute(SID,true)).rejects.toThrow('bestätigte Vorschau');expect(g.calls).toHaveLength(count);const p:any=await r.execute(SID);expect(p.snapshotPreview.proposedRestores).toHaveLength(1);const instance=[...g.events.values()].find((e:any)=>e.recurringEventId);instance.etag='synthetic-drift';await expect(r.execute(SID,true,undefined,{token:p.snapshotPreview.token})).rejects.toThrow('Serienziel');expect(g.calls).toHaveLength(count);await approve(r);expect(g.calls).toHaveLength(count+1);await r.execute(SID,true);expect(g.calls).toHaveLength(count+1);}));
-it('does not reload target inventory for a revision-paused automatic run; changed bytes resume evaluation',async()=>fixture(async({file,r,g})=>{await fs.writeFile(file,ics([BASE]));const reads=vi.spyOn(g,'listManagedEvents');await expect(r.execute(SID,true,'schedule')).rejects.toThrow('bestätigte Vorschau');const count=reads.mock.calls.length;await expect(r.execute(SID,true,'schedule')).rejects.toThrow('bestätigte Vorschau');expect(reads).toHaveBeenCalledTimes(count);await fs.writeFile(file,ics([BASE.replace('synthetic-uid','synthetic-new')]));await expect(r.execute(SID,true,'schedule')).rejects.toThrow('bestätigte Vorschau');expect(reads).toHaveBeenCalledTimes(count+1);}));
+it("binds disappeared exception restoration to fresh snapshot approval and ETags", async () =>
+  fixture(async ({ file, r, g }) => {
+    r.sources[0].snapshotScope = {
+      authority: "window",
+      window: { start: "2026-03-01", end: "2026-05-01", timezone: "Europe/Berlin" },
+    };
+    await fs.writeFile(file, ics([MASTER, EX]));
+    await approve(r);
+    await fs.writeFile(file, ics([MASTER]));
+    const count = g.calls.length;
+    await expect(r.execute(SID, true)).rejects.toThrow("bestätigte Vorschau");
+    expect(g.calls).toHaveLength(count);
+    const p: any = await r.execute(SID);
+    expect(p.snapshotPreview.proposedRestores).toHaveLength(1);
+    const instance = [...g.events.values()].find((e: any) => e.recurringEventId);
+    instance.etag = "synthetic-drift";
+    await expect(
+      r.execute(SID, true, undefined, { token: p.snapshotPreview.token }),
+    ).rejects.toThrow("Serienziel");
+    expect(g.calls).toHaveLength(count);
+    await approve(r);
+    expect(g.calls).toHaveLength(count + 1);
+    await r.execute(SID, true);
+    expect(g.calls).toHaveLength(count + 1);
+  }));
+it("does not reload target inventory for a revision-paused automatic run; changed bytes resume evaluation", async () =>
+  fixture(async ({ file, r, g }) => {
+    await fs.writeFile(file, ics([BASE]));
+    const reads = vi.spyOn(g, "listManagedEvents");
+    await expect(r.execute(SID, true, "schedule")).rejects.toThrow("bestätigte Vorschau");
+    const count = reads.mock.calls.length;
+    await expect(r.execute(SID, true, "schedule")).rejects.toThrow("bestätigte Vorschau");
+    expect(reads).toHaveBeenCalledTimes(count);
+    await fs.writeFile(file, ics([BASE.replace("synthetic-uid", "synthetic-new")]));
+    await expect(r.execute(SID, true, "schedule")).rejects.toThrow("bestätigte Vorschau");
+    expect(reads).toHaveBeenCalledTimes(count + 1);
+  }));
 
-it('keeps incoming exports unselected until fresh approval, then imports additions and a moved exception with its new duration',async()=>fixture(async({file,input,r,g})=>{
- // Entirely invented export revisions: independent future dates, fresh UIDs,
- // no production-derived titles, identities, addresses or event fragments.
- r.sources[0].snapshotScope={authority:'window',window:{start:'2044-02-01',end:'2044-03-01',timezone:'UTC'}};
- const master='UID:invented-orbit-series@example.invalid\r\nDTSTART:20440201T071500Z\r\nDTEND:20440201T080000Z\r\nRRULE:FREQ=WEEKLY;COUNT=4;BYDAY=MO\r\nSUMMARY:Invented orbit workshop';
- const exception='UID:invented-orbit-series@example.invalid\r\nRECURRENCE-ID:20440208T071500Z\r\nDTSTART:20440209T111000Z\r\nDTEND:20440209T113000Z';
- const changed=exception.replace('20440209T111000Z','20440210T162000Z').replace('20440209T113000Z','20440210T174000Z');
- const additions=['UID:invented-comet@example.invalid\r\nDTSTART:20440212T094500Z\r\nDTEND:20440212T101000Z','UID:invented-lunar@example.invalid\r\nDTSTART:20440216T122000Z\r\nDTEND:20440216T125500Z'];
- await fs.writeFile(file,ics([master,exception]));await approve(r);
- const nextFile=path.join(input,'incoming-synthetic.ics');await fs.writeFile(nextFile,ics([master,changed,...additions]));
- // A later filesystem timestamp does not confer authority to select a file.
- await fs.utimes(nextFile,new Date('2050-01-01T00:00:00Z'),new Date('2050-01-01T00:00:00Z'));
- const oldPreview:any=await r.execute(SID);expect(oldPreview.stats).toMatchObject({files:1,filesIgnored:1,components:2});
- const before=g.calls.length;await r.execute(SID,true,'schedule');expect(g.calls).toHaveLength(before);
- expect(r.statuses[SID]).toMatchObject({ok:true,mode:'sync',stats:{filesIgnored:1},sync:{upserted:0,unchanged:2}});
- const oldInstance=[...g.events.values()].find((e:any)=>e.recurringEventId);expect(oldInstance.start.dateTime).toContain('2044-02-09T11:10:00');
- r.sources[0].snapshotFile='incoming-synthetic.ics';
- await expect(r.execute(SID,true,undefined,{token:oldPreview.snapshotPreview.token})).rejects.toThrow('Snapshot geändert');expect(g.calls).toHaveLength(before);
- const next:any=await r.execute(SID);expect(next.snapshotPreview).toMatchObject({added:2,changed:1,unchanged:1});
- await r.execute(SID,true,undefined,{token:next.snapshotPreview.token});expect(g.calls).toHaveLength(before+3);
- const instance=[...g.events.values()].find((e:any)=>e.recurringEventId);expect(instance.id).toBe(oldInstance.id);expect(instance.originalStartTime).toEqual(oldInstance.originalStartTime);
- expect(instance.start.dateTime).toContain('2044-02-10T16:20:00');expect(instance.end.dateTime).toContain('2044-02-10T17:40:00');
- expect([...g.events.values()].filter((e:any)=>!e.recurringEventId)).toHaveLength(3);
- await r.execute(SID,true,'schedule');expect(g.calls).toHaveLength(before+3);expect(r.statuses[SID].sync?.unchanged).toBe(4);
- expect(await fs.readFile(file)).toEqual(Buffer.from(ics([master,exception])));expect(await fs.readFile(nextFile)).toEqual(Buffer.from(ics([master,changed,...additions])));
-}));
+it("keeps incoming exports unselected until fresh approval, then imports additions and a moved exception with its new duration", async () =>
+  fixture(async ({ file, input, r, g }) => {
+    // Entirely invented export revisions: independent future dates, fresh UIDs,
+    // no production-derived titles, identities, addresses or event fragments.
+    r.sources[0].snapshotScope = {
+      authority: "window",
+      window: { start: "2044-02-01", end: "2044-03-01", timezone: "UTC" },
+    };
+    const master =
+      "UID:invented-orbit-series@example.invalid\r\nDTSTART:20440201T071500Z\r\nDTEND:20440201T080000Z\r\nRRULE:FREQ=WEEKLY;COUNT=4;BYDAY=MO\r\nSUMMARY:Invented orbit workshop";
+    const exception =
+      "UID:invented-orbit-series@example.invalid\r\nRECURRENCE-ID:20440208T071500Z\r\nDTSTART:20440209T111000Z\r\nDTEND:20440209T113000Z";
+    const changed = exception
+      .replace("20440209T111000Z", "20440210T162000Z")
+      .replace("20440209T113000Z", "20440210T174000Z");
+    const additions = [
+      "UID:invented-comet@example.invalid\r\nDTSTART:20440212T094500Z\r\nDTEND:20440212T101000Z",
+      "UID:invented-lunar@example.invalid\r\nDTSTART:20440216T122000Z\r\nDTEND:20440216T125500Z",
+    ];
+    await fs.writeFile(file, ics([master, exception]));
+    await approve(r);
+    const nextFile = path.join(input, "incoming-synthetic.ics");
+    await fs.writeFile(nextFile, ics([master, changed, ...additions]));
+    // A later filesystem timestamp does not confer authority to select a file.
+    await fs.utimes(nextFile, new Date("2050-01-01T00:00:00Z"), new Date("2050-01-01T00:00:00Z"));
+    const oldPreview: any = await r.execute(SID);
+    expect(oldPreview.stats).toMatchObject({ files: 1, filesIgnored: 1, components: 2 });
+    const before = g.calls.length;
+    await r.execute(SID, true, "schedule");
+    expect(g.calls).toHaveLength(before);
+    expect(r.statuses[SID]).toMatchObject({
+      ok: true,
+      mode: "sync",
+      stats: { filesIgnored: 1 },
+      sync: { upserted: 0, unchanged: 2 },
+    });
+    const oldInstance = [...g.events.values()].find((e: any) => e.recurringEventId);
+    expect(oldInstance.start.dateTime).toContain("2044-02-09T11:10:00");
+    r.sources[0].snapshotFile = "incoming-synthetic.ics";
+    await expect(
+      r.execute(SID, true, undefined, { token: oldPreview.snapshotPreview.token }),
+    ).rejects.toThrow("Snapshot geändert");
+    expect(g.calls).toHaveLength(before);
+    const next: any = await r.execute(SID);
+    expect(next.snapshotPreview).toMatchObject({ added: 2, changed: 1, unchanged: 1 });
+    await r.execute(SID, true, undefined, { token: next.snapshotPreview.token });
+    expect(g.calls).toHaveLength(before + 3);
+    const instance = [...g.events.values()].find((e: any) => e.recurringEventId);
+    expect(instance.id).toBe(oldInstance.id);
+    expect(instance.originalStartTime).toEqual(oldInstance.originalStartTime);
+    expect(instance.start.dateTime).toContain("2044-02-10T16:20:00");
+    expect(instance.end.dateTime).toContain("2044-02-10T17:40:00");
+    expect([...g.events.values()].filter((e: any) => !e.recurringEventId)).toHaveLength(3);
+    await r.execute(SID, true, "schedule");
+    expect(g.calls).toHaveLength(before + 3);
+    expect(r.statuses[SID].sync?.unchanged).toBe(4);
+    expect(await fs.readFile(file)).toEqual(Buffer.from(ics([master, exception])));
+    expect(await fs.readFile(nextFile)).toEqual(Buffer.from(ics([master, changed, ...additions])));
+  }));
 
-it('reports zero ignored exports for a snapshot-only folder and leaves aggregate mode unchanged',async()=>fixture(async({file,input,r})=>{
- await fs.writeFile(file,ics([BASE]));const snapshot:any=await r.execute(SID);expect(snapshot.stats.filesIgnored).toBe(0);
- await fs.writeFile(path.join(input,'other-synthetic.ics'),ics([BASE.replace('synthetic-uid','invented-second')]));r.sources[0].folderMode='aggregate';
- const aggregate:any=await r.execute(SID);expect(aggregate.stats.files).toBe(2);expect(aggregate.stats.filesIgnored).toBeUndefined();
-}));
+it("reports zero ignored exports for a snapshot-only folder and leaves aggregate mode unchanged", async () =>
+  fixture(async ({ file, input, r }) => {
+    await fs.writeFile(file, ics([BASE]));
+    const snapshot: any = await r.execute(SID);
+    expect(snapshot.stats.filesIgnored).toBe(0);
+    await fs.writeFile(
+      path.join(input, "other-synthetic.ics"),
+      ics([BASE.replace("synthetic-uid", "invented-second")]),
+    );
+    r.sources[0].folderMode = "aggregate";
+    const aggregate: any = await r.execute(SID);
+    expect(aggregate.stats.files).toBe(2);
+    expect(aggregate.stats.filesIgnored).toBeUndefined();
+  }));
 
-it('does not treat an unselected export as the next input after consuming an approved snapshot',async()=>fixture(async({file,input,r,g})=>{
- await fs.writeFile(file,ics([BASE]));await approve(r);const before=g.calls.length;
- await fs.writeFile(path.join(input,'unselected-synthetic.ics'),ics([BASE.replace('synthetic-uid','invented-not-approved')]));
- await r.execute(SID,true);expect(g.calls).toHaveLength(before);expect(r.statuses[SID].stats).toMatchObject({files:0,filesIgnored:1});expect([...g.events.values()].filter((e:any)=>e.status==='confirmed')).toHaveLength(1);
-},'delete'));
+it("does not treat an unselected export as the next input after consuming an approved snapshot", async () =>
+  fixture(async ({ file, input, r, g }) => {
+    await fs.writeFile(file, ics([BASE]));
+    await approve(r);
+    const before = g.calls.length;
+    await fs.writeFile(
+      path.join(input, "unselected-synthetic.ics"),
+      ics([BASE.replace("synthetic-uid", "invented-not-approved")]),
+    );
+    await r.execute(SID, true);
+    expect(g.calls).toHaveLength(before);
+    expect(r.statuses[SID].stats).toMatchObject({ files: 0, filesIgnored: 1 });
+    expect([...g.events.values()].filter((e: any) => e.status === "confirmed")).toHaveLength(1);
+  }, "delete"));

@@ -1,131 +1,1418 @@
-import {useState, useEffect, useRef, type FormEvent} from 'react';
-import {Button} from './components/ui/button';
-import {Input} from './components/ui/input';
-import {InfoTooltip} from './components/ui/info-tooltip';
-import {readAdminToken, persistAdminToken} from './lib/admin-token-storage';
-import type {AppState, Source, Plan, EventTime, GoogleCalendar} from '../shared/contracts';
+import { useState, useEffect, useRef, type FormEvent } from "react";
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { InfoTooltip } from "./components/ui/info-tooltip";
+import { readAdminToken, persistAdminToken } from "./lib/admin-token-storage";
+import type { AppState, Source, Plan, EventTime, GoogleCalendar } from "../shared/contracts";
 
-class ApiError extends Error {constructor(message:string,readonly status:number){super(message);}}
-const blank = (): Omit<Source, 'id'> => ({name:'', kind:'upload', location:'', calendarId:'', enabled:false, watch:false, intervalSeconds:300, cronTimezone:'Europe/Berlin', rules:{busyMode:'outlook_busy', excludeRegex:'^Mittagspause$', acceptedCount:false, includeLocation:false, floatingTimezone:'Europe/Berlin'}});
-const kindName = {upload:'Upload', file:'Datei', folder:'Ordner', url:'URL', google:'Google Calendar'};
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+const blank = (): Omit<Source, "id"> => ({
+  name: "",
+  kind: "upload",
+  location: "",
+  calendarId: "",
+  enabled: false,
+  watch: false,
+  intervalSeconds: 300,
+  cronTimezone: "Europe/Berlin",
+  rules: {
+    busyMode: "outlook_busy",
+    excludeRegex: "^Mittagspause$",
+    acceptedCount: false,
+    includeLocation: false,
+    floatingTimezone: "Europe/Berlin",
+  },
+});
+const kindName = {
+  upload: "Upload",
+  file: "Datei",
+  folder: "Ordner",
+  url: "URL",
+  google: "Google Calendar",
+};
 function displayTime(time: EventTime) {
- return time.date ?? new Intl.DateTimeFormat('de-DE', {dateStyle:'medium', timeStyle:'short', timeZone:time.timeZone}).format(new Date(time.dateTime));
+  return (
+    time.date ??
+    new Intl.DateTimeFormat("de-DE", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: time.timeZone,
+    }).format(new Date(time.dateTime))
+  );
 }
 export default function App() {
- const [token,setToken]=useState(''), [entry,setEntry]=useState(readAdminToken);
- const [state,setState]=useState<AppState|null>(null), [error,setError]=useState(''), [busy,setBusy]=useState(false);
- const [selectedId,setSelectedId]=useState(''), [plan,setPlan]=useState<Plan|null>(null);
- const [form,setForm]=useState(blank), [editing,setEditing]=useState(''), [showForm,setShowForm]=useState(false), [exported,setExported]=useState('');
- const [calendars,setCalendars]=useState<GoogleCalendar[]>([]),[calendarError,setCalendarError]=useState('');
- const loginAttempt=useRef(0), autoAttempted=useRef(false);
- const source=state?.sources.find(s=>s.id===selectedId) ?? state?.sources[0];
- async function api(path:string, options:RequestInit={}, auth=token) {
-  const response=await fetch('/api/'+path,{...options,headers:{Authorization:'Bearer '+auth,...options.body&&!(options.body instanceof FormData)?{'Content-Type':'application/json'}:{},...options.headers}});
-  const data=await response.json(); if(!response.ok) throw new ApiError(data.error??'Anfrage fehlgeschlagen.',response.status); return data;
- }
- async function act(operation:()=>Promise<void>) {setBusy(true);setError('');try {await operation();}catch(e){setError(e instanceof Error?e.message:'Anfrage fehlgeschlagen.');}finally{setBusy(false);}}
- async function login(value:string,automatic=false) {
-  const attempt=++loginAttempt.current;
-  await act(async()=>{try{const result:AppState=await api('state',{},value);if(attempt!==loginAttempt.current)return;setToken(value);setEntry('');setState(result);setSelectedId(result.sources[0]?.id??'');}
-  catch(error){if(attempt!==loginAttempt.current)return;if(automatic&&error instanceof ApiError&&[401,403].includes(error.status))persistAdminToken('');throw error;}});
- }
- useEffect(()=>{if(autoAttempted.current)return;autoAttempted.current=true;if(entry)void login(entry,true);},[]);
+  const [token, setToken] = useState(""),
+    [entry, setEntry] = useState(readAdminToken);
+  const [state, setState] = useState<AppState | null>(null),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  const [selectedId, setSelectedId] = useState(""),
+    [plan, setPlan] = useState<Plan | null>(null);
+  const [form, setForm] = useState(blank),
+    [editing, setEditing] = useState(""),
+    [showForm, setShowForm] = useState(false),
+    [exported, setExported] = useState("");
+  const [calendars, setCalendars] = useState<GoogleCalendar[]>([]),
+    [calendarError, setCalendarError] = useState("");
+  const loginAttempt = useRef(0),
+    autoAttempted = useRef(false);
+  const source = state?.sources.find((s) => s.id === selectedId) ?? state?.sources[0];
+  async function api(path: string, options: RequestInit = {}, auth = token) {
+    const response = await fetch("/api/" + path, {
+      ...options,
+      headers: {
+        Authorization: "Bearer " + auth,
+        ...(options.body && !(options.body instanceof FormData)
+          ? { "Content-Type": "application/json" }
+          : {}),
+        ...options.headers,
+      },
+    });
+    const data = await response.json();
+    if (!response.ok) throw new ApiError(data.error ?? "Anfrage fehlgeschlagen.", response.status);
+    return data;
+  }
+  async function act(operation: () => Promise<void>) {
+    setBusy(true);
+    setError("");
+    try {
+      await operation();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Anfrage fehlgeschlagen.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function login(value: string, automatic = false) {
+    const attempt = ++loginAttempt.current;
+    await act(async () => {
+      try {
+        const result: AppState = await api("state", {}, value);
+        if (attempt !== loginAttempt.current) return;
+        setToken(value);
+        setEntry("");
+        setState(result);
+        setSelectedId(result.sources[0]?.id ?? "");
+      } catch (error) {
+        if (attempt !== loginAttempt.current) return;
+        if (automatic && error instanceof ApiError && [401, 403].includes(error.status))
+          persistAdminToken("");
+        throw error;
+      }
+    });
+  }
+  useEffect(() => {
+    if (autoAttempted.current) return;
+    autoAttempted.current = true;
+    if (entry) void login(entry, true);
+  }, []);
 
- useEffect(()=>{if(!token||!state?.sources.some(s=>s.enabled&&s.kind!=='upload'))return;const timer=setInterval(()=>{void api('state').then(setState).catch(()=>undefined);},5000);return ()=>clearInterval(timer);},[token,!!state?.sources.some(s=>s.enabled&&s.kind!=='upload')]);
+  useEffect(() => {
+    if (!token || !state?.sources.some((s) => s.enabled && s.kind !== "upload")) return;
+    const timer = setInterval(() => {
+      void api("state")
+        .then(setState)
+        .catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [token, !!state?.sources.some((s) => s.enabled && s.kind !== "upload")]);
 
- function changeTransform(index:number,change:Partial<NonNullable<Source['rules']['transforms']>[number]>){rule('transforms',(form.rules.transforms??[]).map((r,i)=>i===index?{...r,...change}:r));}
- function moveTransform(index:number,direction:number){const rules=[...(form.rules.transforms??[])];[rules[index],rules[index+direction]]=[rules[index+direction],rules[index]];rule('transforms',rules);}
- async function loadCalendars(){setCalendarError('');await act(async()=>{try{const data=await api('calendars');setCalendars(data.calendars);}catch(e){setCalendars([]);setCalendarError(e instanceof Error?e.message:'Kalenderliste nicht erreichbar.');}});}
- async function refresh(){setState(await api('state'));}
- async function preview(id:string){await act(async()=>{setPlan(await api('sources/'+id+'/preview',{method:'POST'}));await refresh();});}
- async function synchronize(current:Source){let emptyConfirmed=false,newerConfirmed=!!current.snapshotAutoApply;if(current.folderMode==='snapshot'){if(!plan?.snapshotPreview?.token)throw new Error('Vorschau zuerst bestätigen.');if(current.snapshotClip&&!current.snapshotAutoApply){newerConfirmed=window.confirm('Ich bestätige: dies ist der neueste Export für diese Quelle. Nicht anhand von Dateiname, mtime oder DTSTAMP ableiten. Unbekannte alte Dateien sind nicht automatisch erkennbar.');if(!newerConfirmed)return;}const count=plan.snapshotPreview.proposedRemovals.length;if(!window.confirm(`Snapshot übernehmen: ${count} bestätigte Entfernungsvorschläge. Nur dieser Exportumfang gilt.`))return;if(!plan.stats.components){emptyConfirmed=window.confirm('Dieser Export ist leer. Vollständigkeit für den bestätigten Umfang ausdrücklich bestätigen?');if(!emptyConfirmed)return;}}await api('sources/'+current.id+'/sync',{method:'POST',...current.folderMode==='snapshot'?{body:JSON.stringify({snapshotApproval:plan!.snapshotPreview!.token,emptyConfirmed,newerConfirmed})}:{}});setPlan(null);await refresh();}
- async function upload(current:Source,file:File){await act(async()=>{const data=new FormData();data.append('file',file);await api('sources/'+current.id+'/upload',{method:'POST',body:data});setPlan(await api('sources/'+current.id+'/preview',{method:'POST'}));await refresh();});}
- async function save(event:FormEvent){event.preventDefault();await act(async()=>{const saved:Source=await api('sources'+(editing?'/'+editing:''),{method:editing?'PUT':'POST',body:JSON.stringify(form)});setSelectedId(editing||saved.id);setPlan(null);setForm(blank());setEditing('');setShowForm(false);await refresh();});}
- function rule<K extends keyof Source['rules']>(key:K,value:Source['rules'][K]){setForm({...form,rules:{...form.rules,[key]:value}});}
- function edit(){if(!source)return;const{id:_,...rest}=source;setEditing(source.id);setForm(rest);setShowForm(true);}
- function logout(){loginAttempt.current++;persistAdminToken('');setToken('');setEntry('');setState(null);setPlan(null);setExported('');setShowForm(false);setError('');setCalendars([]);setCalendarError('');}
- return <main className="workspace">
-  <header className="app-header"><h1>ICS Sync</h1>{state&&<div className="header-actions"><Button size="sm" variant="ghost" disabled={busy} onClick={()=>{setEditing('');setForm(blank());setShowForm(true);}}>Quelle hinzufügen</Button><Button size="sm" variant="ghost" disabled={busy} onClick={()=>void act(async()=>{const data=await api('env-export');setExported(data.env);})}>ENV exportieren</Button><Button size="sm" variant="ghost" disabled={busy} onClick={logout}>Abmelden</Button></div>}</header>
-  {error&&<p role="alert" className="error">{error}</p>}
-  {!state?<form className="login" onSubmit={e=>{e.preventDefault();void login(entry);}}>
-   <label>Admin-Token<Input type="password" value={entry} onChange={e=>{loginAttempt.current++;setEntry(e.target.value);persistAdminToken(e.target.value);}} required autoComplete="off"/></label>
-   <div className="actions"><Button disabled={busy}>Öffnen</Button></div>
-  </form>:<>
-   <div className="status-line"><span>{state.writesEnabled?'Google-Schreiben aktiv':'Nur Vorschau'}</span><span>{state.oauthConfigured?'OAuth eingerichtet':'Google nicht eingerichtet'}</span><span>{(source?.calendarId||state.defaultCalendarId||state.calendarConfigured)?'Zielkalender konfiguriert':'Zielkalender fehlt'}</span></div>
-   {exported&&<section className="settings"><label>ENV-Konfiguration<textarea readOnly value={exported} rows={5}/></label><Button size="sm" variant="ghost" onClick={()=>{const url=URL.createObjectURL(new Blob([exported],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='ics-sync-config.env';a.click();URL.revokeObjectURL(url);}}>Herunterladen</Button><Button size="sm" variant="ghost" onClick={()=>setExported('')}>Schließen</Button></section>}
-   <section className="source-bar">
-    <label className="source-select">Quelle<select aria-label="Quelle" value={source?.id??''} disabled={busy||!state.sources.length} onChange={e=>{setSelectedId(e.target.value);setPlan(null);setShowForm(false);setError('');}}>{!state.sources.length&&<option value="">Keine Quellen</option>}{state.sources.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
-    {source&&<><span className="source-meta">{kindName[source.kind]} · {source.enabled?source.cron?'Cron':`${source.intervalSeconds}s`:'Manuell'}{source.enabled&&source.kind==='folder'&&source.watch?' · Watch':''}</span><div className="actions"><Button size="sm" disabled={busy} onClick={()=>void preview(source.id)}>Vorschau</Button><Button size="sm" variant="outline" disabled={busy||!state.writesEnabled||!state.oauthConfigured||!(source.calendarId||state.defaultCalendarId||state.calendarConfigured)||(source.folderMode==='snapshot'&&!plan?.snapshotPreview?.token)} onClick={()=>void act(async()=>{await synchronize(source);})}>Synchronisieren</Button><Button size="sm" variant="ghost" disabled={busy} onClick={edit}>Einstellungen</Button></div></>}
-   </section>
-   {source?.kind==='upload'&&<label className="upload">ICS-Datei<Input aria-label={'Upload für '+source.name} type="file" accept=".ics,text/calendar" disabled={busy} onChange={e=>{const file=e.target.files?.[0];if(file)void upload(source,file);}}/></label>}
-   {source?.kind==='folder'&&source.watch&&<p className="source-status" role="status">{!source.enabled?'Dateibeobachtung pausiert':state.watchStatuses?.[source.id]?.mode==='watching'?'Dateibeobachtung aktiv':state.watchStatuses?.[source.id]?.mode==='settling'?'Dateien werden stabilisiert':state.watchStatuses?.[source.id]?.mode==='polling'?'Polling als Watch-Fallback':'Dateibeobachtung wird gestartet'}</p>}
-   {source&&state.statuses[source.id]&&<p role="status" className="source-status">{state.statuses[source.id].running?'Abgleich läuft':state.statuses[source.id].ok?(((state.statuses[source.id].stats?.quarantinedSeries??0)+(state.statuses[source.id].stats?.quarantinedGroups??0))?'Übrige Termine geprüft · '+((state.statuses[source.id].stats?.quarantinedSeries??0)+(state.statuses[source.id].stats?.quarantinedGroups??0))+' Quellgruppen zurückgestellt; bestehende Kopien geschützt':(state.statuses[source.id].stats?.filesIgnored??0)>0?'Ausgewählte Snapshot-Datei geprüft':'Prüfung erfolgreich'):state.statuses[source.id].error}</p>}
-   {source?.folderMode==='snapshot'&&(state.statuses[source.id]?.stats?.filesIgnored??0)>0&&<p role="status" className="source-status">{state.statuses[source.id].stats!.filesIgnored} weitere ICS-Dateien nicht eingelesen. Nur die ausgewählte Snapshot-Datei wird synchronisiert. {source.snapshotSelection==='latest-mtime'?'Die neueste Dateizeit wählt genau einen Export; ältere Dateien werden nicht zusammengeführt.':'Für einen anderen Export: Snapshot-Dateiname in den Einstellungen ändern, Vorschau prüfen und bestätigen.'} Dateizeiten beweisen keine Neuheit.</p>}
-   {source&&state.statuses[source.id]?.progress&&<p className="source-status">{state.statuses[source.id].progress!.fetched} abgerufen · {state.statuses[source.id].progress!.changed} Änderungen · {state.statuses[source.id].progress!.skipped} unverändert · {state.statuses[source.id].progress!.written} geschrieben · {state.statuses[source.id].progress!.pending} offen{state.statuses[source.id].progress!.resuming?' · Wiederaufnahme':''}</p>}
-   {source&&state.statuses[source.id]?.retryAt&&<p className="source-status">Rate-Limit-Pause bis {new Date(state.statuses[source.id].retryAt!).toLocaleString('de-DE')}. Kein sofortiger Retry.</p>}
-   {source&&state.statuses[source.id]?.automaticPaused&&<p className="source-status">Automatik pausiert. Einstellungen prüfen; nach einer aktiven Rate-Limit-Pause ausdrücklich erneut synchronisieren.</p>}
-   {source&&((state.statuses[source.id]?.stats?.filesArchived??0)+(state.statuses[source.id]?.stats?.filesDeleted??0)+(state.statuses[source.id]?.stats?.filesRetained??0)>0)&&<p className="source-status">Dateien: {state.statuses[source.id].stats?.filesArchived??0} archiviert · {state.statuses[source.id].stats?.filesDeleted??0} gelöscht · {state.statuses[source.id].stats?.filesRetained??0} zurückgestellt</p>}
-   {showForm&&<details className="settings" open onToggle={e=>{if(!e.currentTarget.open)setShowForm(false);}}><summary>{editing?'Einstellungen':'Neue Quelle'}</summary><form onSubmit={e=>void save(e)} className="settings-grid">
-    <div className="wide actions"><Button size="sm" type="button" variant="outline" disabled={busy||!state.oauthConfigured} onClick={()=>void loadCalendars()}>Kalender laden</Button></div>
-    {calendarError&&<div className="wide muted" role="status"><p>{calendarError}</p><p>Zusätzliche Leseberechtigung: <code>https://www.googleapis.com/auth/calendar.calendarlist.readonly</code>. Nach Freigabe lokal erneut verbinden: <code>npm run oauth:setup -- --with-calendar-list</code>. Danach Container neu starten und Kalender laden.</p></div>}
-    <label className="wide">Zielkalender dieser Quelle<select aria-label="Zielkalender dieser Quelle" value={form.calendarId??''} onChange={e=>setForm({...form,calendarId:e.target.value})}><option value="">Globalen Standard verwenden{state.defaultCalendarId?' ('+(calendars.find(c=>c.id===state.defaultCalendarId)?.summary??state.defaultCalendarId)+')':' · nicht gesetzt'}</option>{form.calendarId&&!calendars.some(c=>c.id===form.calendarId)&&<option value={form.calendarId}>{form.calendarId} · noch nicht geprüft</option>}{calendars.map(c=><option key={c.id} value={c.id} disabled={!c.writable||(form.kind==='google'&&c.id===form.sourceCalendarId)}>{c.summary}{c.primary?' · Hauptkalender':''}{!c.writable?' · schreibgeschützt':''}</option>)}</select></label>
-    {calendars.length>0&&<label className="wide">Globaler Standard<select aria-label="Globaler Standard" value={state.defaultCalendarId??''} disabled={busy} onChange={e=>{const calendarId=e.target.value;void act(async()=>{await api('default-calendar',{method:'PUT',body:JSON.stringify({calendarId})});setPlan(null);await refresh();});}}><option value="">Kein Standard</option>{state.defaultCalendarId&&!calendars.some(c=>c.id===state.defaultCalendarId)&&<option value={state.defaultCalendarId}>{state.defaultCalendarId} · noch nicht geprüft</option>}{calendars.map(c=><option key={c.id} value={c.id} disabled={!c.writable||(form.kind==='google'&&c.id===form.sourceCalendarId)}>{c.summary}{!c.writable?' · schreibgeschützt':''}</option>)}</select></label>}
-    <p className="wide muted">Zielwechsel lässt bisherige Termine im alten Kalender bestehen. Schreibgeschützte Kalender sind nicht auswählbar.</p>
-    <label>Name<Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required maxLength={80}/></label>
-    <label>Typ<select aria-label="Typ" value={form.kind} disabled={!!editing} onChange={e=>setForm({...form,kind:e.target.value as Source['kind'],watch:e.target.value==='folder'&&form.watch})}><option value="upload">Upload</option><option value="file">Datei</option><option value="folder">Ordner</option><option value="url">URL</option><option value="google">Google Calendar</option></select></label>
-    {form.kind!=='upload'&&form.kind!=='google'&&<label className="wide">{form.kind==='url'?'URL':form.kind==='folder'?'Unterordner (optional; leer = ICS_SOURCE_DIR)':'Pfad (relativ zur Quellwurzel)'}<Input type={form.kind==='url'?'url':'text'} value={form.location} placeholder={editing?'Unverändert bei leerem Feld':form.kind==='url'?'https://…':'.'} onChange={e=>setForm({...form,location:e.target.value})}/></label>}
-    {form.kind==='folder'&&<>
-     <label>Ordnerbetrieb<select aria-label="Ordnerbetrieb" value={form.folderMode??'aggregate'} onChange={e=>setForm({...form,folderMode:e.target.value as Source['folderMode'],snapshotClip:e.target.value==='snapshot'?form.snapshotClip:undefined,...e.target.value==='aggregate'?{snapshotSelection:undefined,snapshotAutoApply:false,clipSeriesMode:undefined}:{}})}><option value="aggregate">Alle Dateien zusammenführen</option><option value="snapshot">Einen Ersatzexport verwenden</option></select></label>
-     <label>Dateibehandlung<select aria-label="Dateibehandlung" value={form.fileHandling??'keep'} onChange={e=>setForm({...form,fileHandling:e.target.value as Source['fileHandling']})}><option value="keep">Behalten</option><option value="archive">Nach bestätigtem Import archivieren</option><option value="delete">Nach bestätigtem Import löschen</option></select></label>
-     {form.fileHandling&&form.fileHandling!=='keep'&&<><label className="wide checkbox"><input type="checkbox" required checked={!!form.immutableFilesConfirmed} onChange={e=>setForm({...form,immutableFilesConfirmed:e.target.checked})}/> Der Exporter veröffentlicht fertige Dateien atomar und verändert veröffentlichte Dateien nie.</label><p className="wide muted">Schreibbarer Quellmount und geschütztes /data erforderlich. Fehler behalten Eingaben. Löschen entfernt nur bestätigte Eingabedateien, nicht Kalendertermine. Archive und offene Claims liegen in geschützten Unterordnern.</p></>}
-     {form.folderMode==='snapshot'&&<>
-      <label>Dateiauswahl<select aria-label="Dateiauswahl" value={form.snapshotSelection??'explicit'} onChange={e=>setForm({...form,snapshotSelection:e.target.value as Source['snapshotSelection'],snapshotAutoApply:e.target.value==='explicit'?false:form.snapshotAutoApply})}><option value="explicit">Fester Dateiname</option><option value="latest-mtime">Neueste Änderungszeit · vertrauter Exporter</option></select></label>
-      <label className="wide checkbox"><input type="checkbox" checked={!!form.snapshotAutoApply} disabled={form.snapshotSelection!=='latest-mtime'||!form.snapshotClip?.completeExportConfirmed||form.fileHandling&&form.fileHandling!=='keep'} onChange={e=>setForm({...form,snapshotAutoApply:e.target.checked})}/> Neue vollständige Exporte automatisch übernehmen. Ich vertraue der Dateizeit als Veröffentlichungsreihenfolge.</label>
-      <label>Serienabgleich<select aria-label="Serienabgleich" value={form.clipSeriesMode??'strict'} onChange={e=>setForm({...form,clipSeriesMode:e.target.value as Source['clipSeriesMode']})}><option value="strict">Streng · Strukturänderungen stoppen</option><option value="preserve-master">Wöchentliche Clip-Serien erhalten</option><option value="window-reconcile">Instanzen nur im Clip-Fenster ersetzen</option></select></label>
-      <label>Snapshot-Dateiname<Input aria-label="Snapshot-Dateiname" required={form.snapshotSelection!=='latest-mtime'} value={form.snapshotFile??''} placeholder="weekly.ics" onChange={e=>setForm({...form,snapshotFile:e.target.value})}/></label>
-      <label className="wide checkbox"><input type="checkbox" checked={!!form.snapshotClip} onChange={e=>setForm({...form,snapshotClip:e.target.checked?{completeExportConfirmed:false,boundary:'protect-boundary',ordering:'manual-confirm'}:undefined,snapshotScope:undefined,...!e.target.checked?{snapshotSelection:undefined,snapshotAutoApply:false,clipSeriesMode:undefined}:{}})}/> VCALENDAR-Clip-Fenster verwenden</label>
-      {form.snapshotClip?<><label className="wide checkbox"><input type="checkbox" checked={form.snapshotClip.completeExportConfirmed} onChange={e=>setForm({...form,snapshotClip:{...form.snapshotClip!,completeExportConfirmed:e.target.checked},...!e.target.checked?{snapshotSelection:undefined,snapshotAutoApply:false}:{}})}/> Der Export enthält alle Termine im Clip-Fenster, ohne zusätzliche Stunden-, Auswahl- oder Detailfilter.</label><label>Clip-Endgrenze<select aria-label="Clip-Endgrenze" value={form.snapshotClip.boundary} onChange={e=>setForm({...form,snapshotClip:{...form.snapshotClip!,boundary:e.target.value as 'exclusive'|'protect-boundary'}})}><option value="protect-boundary">Grenzberührende Termine schützen</option><option value="exclusive">Exporter garantiert exklusive Endgrenze</option></select></label><p className="wide muted">Dateizeiten beweisen keine inhaltliche Neuheit. Standardmäßig wird die Reihenfolge manuell bestätigt; die Automatik vertraut ausdrücklich der Veröffentlichungsreihenfolge des Exporters. Bekannte alte Versionen werden blockiert; unbekannte alte Dateien können nicht erkannt werden. /data hält diese Reihenfolge auch bei Neustart. Fehlende oder doppelte Clip-Grenzen stoppen den Import.</p></>:<>      <label>Exportumfang<select aria-label="Exportumfang" value={form.snapshotScope?.authority??'unknown'} onChange={e=>setForm({...form,snapshotScope:{authority:e.target.value as 'unknown'|'full'|'window',...e.target.value==='window'?{window:form.snapshotScope?.window??{start:'',end:'',timezone:form.rules.floatingTimezone}}:{}}})}><option value="unknown">Unbekannt · keine fehlenden Termine absagen</option><option value="full">Bestätigter vollständiger Kalenderexport</option><option value="window">Bestätigtes Zeitfenster / Kalenderwoche</option></select></label>
-      {form.snapshotScope?.authority==='window'&&<><label>Fensterbeginn<Input aria-label="Fensterbeginn" type="date" required value={form.snapshotScope.window?.start??''} onChange={e=>setForm({...form,snapshotScope:{authority:'window',window:{...form.snapshotScope!.window!,start:e.target.value}}})}/></label><label>Fensterende (exklusiv)<Input aria-label="Fensterende (exklusiv)" type="date" required value={form.snapshotScope.window?.end??''} onChange={e=>setForm({...form,snapshotScope:{authority:'window',window:{...form.snapshotScope!.window!,end:e.target.value}}})}/></label><label>Fensterzeitzone<Input aria-label="Fensterzeitzone" required value={form.snapshotScope.window?.timezone??''} onChange={e=>setForm({...form,snapshotScope:{authority:'window',window:{...form.snapshotScope!.window!,timezone:e.target.value}}})}/></label></>}
-</>}
-      <p className="wide muted">/data speichert die bestätigte Exportversion. Standardmäßig benötigt jede neue Version Vorschau und Bestätigung. Automatische Übernahme ist ein gesondertes Opt-in für vollständige Exporte eines vertrauten Exporters. Keine Fensterableitung aus Terminen. Serien und grenzüberschreitende Termine bleiben bei Zeitfenstern geschützt.</p>
-     </>}
-    </>}
-    {form.kind==='google'&&<><label className="wide">Google-Quellkalender<select aria-label="Google-Quellkalender" required value={form.sourceCalendarId??''} onChange={e=>setForm({...form,sourceCalendarId:e.target.value||undefined})}><option value="">Quellkalender auswählen</option>{form.sourceCalendarId&&!calendars.some(c=>c.id===form.sourceCalendarId)&&<option value={form.sourceCalendarId}>Gespeicherter Quellkalender · noch nicht geprüft</option>}{calendars.filter(c=>c.accessRole!=='freeBusyReader').map(c=><option key={c.id} value={c.id} disabled={c.id===(form.calendarId||state.defaultCalendarId)}>{c.summary}{!c.writable?' · nur lesbar':''}</option>)}</select></label><p className="wide muted">Änderungen per Intervall oder Cron abrufen. Kein garantierter Echtzeitabgleich; Push benötigt einen HTTPS-Endpunkt und erneuerte Kanäle.</p></>}
-    <div className="field"><div className="field-label"><label htmlFor="busy-mode">Busy-Regel</label><InfoTooltip label="Busy-Regel">{"Outlook: nur Microsoft BUSY; FREE und TENTATIVE nicht. Fehlt der Status, gilt TRANSP. RFC: TRANSPARENT nicht, OPAQUE oder fehlendes TRANSP ja; Outlook-Status ignoriert. Alle: kein Busy-Filter. Titelfilter und Absagen gelten weiterhin."}</InfoTooltip></div><select id="busy-mode" value={form.rules.busyMode} onChange={e=>rule('busyMode',e.target.value as Source['rules']['busyMode'])}><option value="outlook_busy">Outlook BUSY / TRANSP</option><option value="rfc">RFC OPAQUE</option><option value="all">Alle</option></select></div>
-    <label>Titel ausschließen (RegEx)<Input value={form.rules.excludeRegex} onChange={e=>rule('excludeRegex',e.target.value)} maxLength={256}/></label>
-    <label>Ort einschließen (RegEx)<Input value={form.rules.locationIncludeRegex??''} onChange={e=>rule('locationIncludeRegex',e.target.value)} maxLength={256}/></label>
-    <label>Ort ausschließen (RegEx)<Input value={form.rules.locationExcludeRegex??''} onChange={e=>rule('locationExcludeRegex',e.target.value)} maxLength={256}/></label>
-    <label>Ortfilter-Flags<Input value={form.rules.locationRegexFlags??'iu'} onChange={e=>rule('locationRegexFlags',e.target.value)} maxLength={5}/></label>
-    <p className="wide muted">Titel- und Ortfilter prüfen die Originalwerte vor Transforms. Einschließen muss passen; Ausschließen darf nicht passen. Leerer Ort wird als leerer Text geprüft. RE2: keine Lookarounds oder Rückverweise; Unicode ist immer aktiv.</p>
-    <fieldset className="wide transform-list"><legend>Titel-/Orttransforms · erste passende Regel gewinnt</legend>
-     {(form.rules.transforms??[]).map((transform,index)=><div className="settings-grid" key={index}>
-      <label>Feld<select aria-label={'Transform '+(index+1)+' Feld'} value={transform.field} onChange={e=>changeTransform(index,{field:e.target.value as 'title'|'location'})}><option value="title">Titel</option><option value="location">Ort</option></select></label>
-      <label>Muster<Input aria-label={'Transform '+(index+1)+' Muster'} required maxLength={256} value={transform.pattern} onChange={e=>changeTransform(index,{pattern:e.target.value})}/></label>
-      <label>Flags<Input aria-label={'Transform '+(index+1)+' Flags'} maxLength={5} value={transform.flags} onChange={e=>changeTransform(index,{flags:e.target.value})}/></label>
-      <label>Ersetzung<Input aria-label={'Transform '+(index+1)+' Ersetzung'} maxLength={1024} value={transform.replacement} onChange={e=>changeTransform(index,{replacement:e.target.value})}/></label>
-      <div className="actions"><Button type="button" size="sm" disabled={index===0} onClick={()=>moveTransform(index,-1)}>Nach oben</Button><Button type="button" size="sm" disabled={index===(form.rules.transforms?.length??0)-1} onClick={()=>moveTransform(index,1)}>Nach unten</Button><Button type="button" size="sm" onClick={()=>rule('transforms',(form.rules.transforms??[]).filter((_,i)=>i!==index))}>Entfernen</Button></div>
-     </div>)}
-     <Button type="button" size="sm" disabled={(form.rules.transforms?.length??0)>=32} onClick={()=>rule('transforms',[...(form.rules.transforms??[]),{field:'title',pattern:'',flags:'iu',replacement:''}])}>Transform hinzufügen</Button>
-     <p className="muted">Eine Regel für die gesamte Liste; auch unveränderte Ersetzungen verbrauchen den ersten Treffer. Keine Kaskade. Flags g = alle Treffer dieser Regel, i = Groß-/Kleinschreibung ignorieren, m = Zeilen, s = Punkt inklusive Zeilenumbruch, u = Unicode. Ersetzung: {'$1, $2, $&, $<name>; $$'} ergibt ein Dollarzeichen. Kein ausführbarer Code. Nicht ersetzte Titelteile bleiben sichtbar; Orte erscheinen nur mit „Ort übernehmen“. Zusagenzahl bleibt angehängt. Nach Speichern Vorschau prüfen.</p>
-    </fieldset>
-    <label>Floating-Zeitzone<Input value={form.rules.floatingTimezone} onChange={e=>rule('floatingTimezone',e.target.value)} required/></label>
-    <div className="field"><div className="field-label"><label htmlFor="interval-seconds">Intervall (Sekunden)</label><InfoTooltip label="Intervall (Sekunden)">{"Abstand zwischen automatischen Läufen: 300 Sekunden = 5 Minuten, mindestens 60 Sekunden. Nur mit Automatisch prüfen; ein Cron-Ausdruck hat Vorrang."}</InfoTooltip></div><Input id="interval-seconds" type="number" min={60} max={604800} value={form.intervalSeconds} onChange={e=>setForm({...form,intervalSeconds:Number(e.target.value)})}/></div>
-    <label>Cron (optional)<Input value={form.cron??''} placeholder="*/5 * * * *" onChange={e=>setForm({...form,cron:e.target.value||undefined})}/></label>
-    <label>Cron-Zeitzone<Input value={form.cronTimezone} onChange={e=>setForm({...form,cronTimezone:e.target.value})}/></label>
-    {form.kind==='folder'&&<label className="checkbox"><input type="checkbox" checked={form.watch} onChange={e=>setForm({...form,watch:e.target.checked})}/> Ordneränderungen beobachten</label>}
-    <div className="checkbox field"><label className="checkbox"><input type="checkbox" checked={form.rules.includeLocation} onChange={e=>rule('includeLocation',e.target.checked)}/> Ort übernehmen</label><InfoTooltip label="Ort übernehmen">Originalort in Vorschau und Ziel übernehmen. Standardmäßig aus; beim Ausschalten wird ein zuvor kopierter Ort beim nächsten freigegebenen Abgleich entfernt.</InfoTooltip></div>
-    <label className="checkbox"><input type="checkbox" checked={form.rules.acceptedCount} onChange={e=>rule('acceptedCount',e.target.checked)}/> Zusagenzahl</label>
-    <div className="checkbox field"><label className="checkbox"><input type="checkbox" checked={form.enabled} disabled={form.kind==='upload'} onChange={e=>setForm({...form,enabled:e.target.checked})}/> Automatisch prüfen</label><InfoTooltip label="Automatisch prüfen">{"Datei, Ordner, URL oder Google Calendar nach Intervall/Cron prüfen; Uploads nicht. Bei gesperrtem Google-Schreiben nur Vorschau. Bei ENABLE_GOOGLE_WRITES=true automatischer Sync; OAuth und Zielkalender müssen eingerichtet sein."}</InfoTooltip></div>
-    <div className="wide actions"><Button size="sm" disabled={busy}>Speichern</Button><Button size="sm" type="button" variant="ghost" onClick={()=>setShowForm(false)}>Abbrechen</Button></div>
-    <p className="wide muted">Änderungen bis Neustart · dauerhaft über ENV-Export. Watch: nur direkte ICS-Dateien, stabilisiert und entprellt; Intervall/Cron bleibt aktiv.</p>
-    {editing&&<code className="wide muted">{editing}</code>}
-   </form></details>}
-   {plan&&<section className="preview"><div className="preview-header"><h2>Vorschau</h2><span className="muted">{plan.stats.upserts} Termine · {plan.stats.explicitCancellations+(plan.stats.reconciledCancellations??0)} Ausschlüsse / Absagen</span></div>
-    {plan.snapshotPreview&&<div className="snapshot-summary">{plan.snapshotPreview.clipWindow&&<p>VCALENDAR-Clip: {plan.snapshotPreview.clipWindow.start} → {plan.snapshotPreview.clipWindow.end}; angewandter Umfang und Grenzschutz unten.</p>}<p>{plan.snapshotPreview.added} neu · {plan.snapshotPreview.changed} geändert · {plan.snapshotPreview.unchanged} unverändert · {plan.snapshotPreview.proposedRemovals.length} Entfernungsvorschläge · {plan.snapshotPreview.protectedAbsent} fehlende Einträge geschützt</p><p>Umfang: {plan.snapshotPreview.authority==='full'?'vollständiger Export':plan.snapshotPreview.authority==='window'?`${plan.snapshotPreview.start} bis ${plan.snapshotPreview.end} (exklusiv), ${plan.snapshotPreview.timezone}`:'unbekannt'}</p>{plan.snapshotPreview.removalTimes.slice(0,200).map(r=><p key={r.key}>Vorgeschlagene Absage: {r.start?displayTime(r.start):'—'} → {r.end?displayTime(r.end):'—'}</p>)}{plan.snapshotPreview.warnings.map(w=><p className="muted" key={w}>{w}</p>)}</div>}
-    <div className="table-scroll"><table aria-label="Anonymisierte Termine"><thead><tr><th>Titel / Aktion</th><th>Beginn</th><th>Ende (exklusiv)</th>{plan.items.some(i=>!!i.event?.location)&&<th>Ort</th>}<th>Zuordnung</th></tr></thead><tbody>{plan.items.slice(0,200).map(item=><tr key={item.key}><td>{item.cancel?'Ausgeschlossen / abgesagt':item.event!.summary}{item.parent?<small>Serienausnahme</small>:item.event?.recurrence?<small>Serie</small>:null}</td><td>{item.event?displayTime(item.event.start):'—'}</td><td>{item.event?displayTime(item.event.end):'—'}</td>{plan.items.some(i=>!!i.event?.location)&&<td>{item.event?.location??'—'}</td>}<td><code title={item.key}>{item.key.slice(0,12)}…</code>{item.original&&<small>Ursprünglich: {displayTime(item.original)}</small>}</td></tr>)}</tbody></table></div>
-    {!plan.items.length&&<p className="muted">Keine Termine.</p>}{plan.items.length>200&&<p className="muted">200 von {plan.items.length} Einträgen</p>}
-    {plan.warnings.length>0&&<details className="warnings"><summary>Hinweise ({plan.warnings.length})</summary>{plan.warnings.map(w=><p key={w}>{w}</p>)}</details>}
-   </section>}
-  </>}
- </main>;
+  function changeTransform(
+    index: number,
+    change: Partial<NonNullable<Source["rules"]["transforms"]>[number]>,
+  ) {
+    rule(
+      "transforms",
+      (form.rules.transforms ?? []).map((r, i) => (i === index ? { ...r, ...change } : r)),
+    );
+  }
+  function moveTransform(index: number, direction: number) {
+    const rules = [...(form.rules.transforms ?? [])];
+    [rules[index], rules[index + direction]] = [rules[index + direction], rules[index]];
+    rule("transforms", rules);
+  }
+  async function loadCalendars() {
+    setCalendarError("");
+    await act(async () => {
+      try {
+        const data = await api("calendars");
+        setCalendars(data.calendars);
+      } catch (e) {
+        setCalendars([]);
+        setCalendarError(e instanceof Error ? e.message : "Kalenderliste nicht erreichbar.");
+      }
+    });
+  }
+  async function refresh() {
+    setState(await api("state"));
+  }
+  async function preview(id: string) {
+    await act(async () => {
+      setPlan(await api("sources/" + id + "/preview", { method: "POST" }));
+      await refresh();
+    });
+  }
+  async function synchronize(current: Source) {
+    let emptyConfirmed = false,
+      newerConfirmed = !!current.snapshotAutoApply;
+    if (current.folderMode === "snapshot") {
+      if (!plan?.snapshotPreview?.token) throw new Error("Vorschau zuerst bestätigen.");
+      if (current.snapshotClip && !current.snapshotAutoApply) {
+        newerConfirmed = window.confirm(
+          "Ich bestätige: dies ist der neueste Export für diese Quelle. Nicht anhand von Dateiname, mtime oder DTSTAMP ableiten. Unbekannte alte Dateien sind nicht automatisch erkennbar.",
+        );
+        if (!newerConfirmed) return;
+      }
+      const count = plan.snapshotPreview.proposedRemovals.length;
+      if (
+        !window.confirm(
+          `Snapshot übernehmen: ${count} bestätigte Entfernungsvorschläge. Nur dieser Exportumfang gilt.`,
+        )
+      )
+        return;
+      if (!plan.stats.components) {
+        emptyConfirmed = window.confirm(
+          "Dieser Export ist leer. Vollständigkeit für den bestätigten Umfang ausdrücklich bestätigen?",
+        );
+        if (!emptyConfirmed) return;
+      }
+    }
+    await api("sources/" + current.id + "/sync", {
+      method: "POST",
+      ...(current.folderMode === "snapshot"
+        ? {
+            body: JSON.stringify({
+              snapshotApproval: plan!.snapshotPreview!.token,
+              emptyConfirmed,
+              newerConfirmed,
+            }),
+          }
+        : {}),
+    });
+    setPlan(null);
+    await refresh();
+  }
+  async function upload(current: Source, file: File) {
+    await act(async () => {
+      const data = new FormData();
+      data.append("file", file);
+      await api("sources/" + current.id + "/upload", { method: "POST", body: data });
+      setPlan(await api("sources/" + current.id + "/preview", { method: "POST" }));
+      await refresh();
+    });
+  }
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    await act(async () => {
+      const saved: Source = await api("sources" + (editing ? "/" + editing : ""), {
+        method: editing ? "PUT" : "POST",
+        body: JSON.stringify(form),
+      });
+      setSelectedId(editing || saved.id);
+      setPlan(null);
+      setForm(blank());
+      setEditing("");
+      setShowForm(false);
+      await refresh();
+    });
+  }
+  function rule<K extends keyof Source["rules"]>(key: K, value: Source["rules"][K]) {
+    setForm({ ...form, rules: { ...form.rules, [key]: value } });
+  }
+  function edit() {
+    if (!source) return;
+    const { id: _, ...rest } = source;
+    setEditing(source.id);
+    setForm(rest);
+    setShowForm(true);
+  }
+  function logout() {
+    loginAttempt.current++;
+    persistAdminToken("");
+    setToken("");
+    setEntry("");
+    setState(null);
+    setPlan(null);
+    setExported("");
+    setShowForm(false);
+    setError("");
+    setCalendars([]);
+    setCalendarError("");
+  }
+  return (
+    <main className="workspace">
+      <header className="app-header">
+        <h1>ICS Sync</h1>
+        {state && (
+          <div className="header-actions">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setEditing("");
+                setForm(blank());
+                setShowForm(true);
+              }}
+            >
+              Quelle hinzufügen
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() =>
+                void act(async () => {
+                  const data = await api("env-export");
+                  setExported(data.env);
+                })
+              }
+            >
+              ENV exportieren
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={logout}>
+              Abmelden
+            </Button>
+          </div>
+        )}
+      </header>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      {!state ? (
+        <form
+          className="login"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void login(entry);
+          }}
+        >
+          <label>
+            Admin-Token
+            <Input
+              type="password"
+              value={entry}
+              onChange={(e) => {
+                loginAttempt.current++;
+                setEntry(e.target.value);
+                persistAdminToken(e.target.value);
+              }}
+              required
+              autoComplete="off"
+            />
+          </label>
+          <div className="actions">
+            <Button disabled={busy}>Öffnen</Button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <div className="status-line">
+            <span>{state.writesEnabled ? "Google-Schreiben aktiv" : "Nur Vorschau"}</span>
+            <span>
+              {state.oauthConfigured ? "OAuth eingerichtet" : "Google nicht eingerichtet"}
+            </span>
+            <span>
+              {source?.calendarId || state.defaultCalendarId || state.calendarConfigured
+                ? "Zielkalender konfiguriert"
+                : "Zielkalender fehlt"}
+            </span>
+          </div>
+          {exported && (
+            <section className="settings">
+              <label>
+                ENV-Konfiguration
+                <textarea readOnly value={exported} rows={5} />
+              </label>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  const url = URL.createObjectURL(
+                    new Blob([exported], { type: "text/plain;charset=utf-8" }),
+                  );
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "ics-sync-config.env";
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                Herunterladen
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setExported("")}>
+                Schließen
+              </Button>
+            </section>
+          )}
+          <section className="source-bar">
+            <label className="source-select">
+              Quelle
+              <select
+                aria-label="Quelle"
+                value={source?.id ?? ""}
+                disabled={busy || !state.sources.length}
+                onChange={(e) => {
+                  setSelectedId(e.target.value);
+                  setPlan(null);
+                  setShowForm(false);
+                  setError("");
+                }}
+              >
+                {!state.sources.length && <option value="">Keine Quellen</option>}
+                {state.sources.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {source && (
+              <>
+                <span className="source-meta">
+                  {kindName[source.kind]} ·{" "}
+                  {source.enabled
+                    ? source.cron
+                      ? "Cron"
+                      : `${source.intervalSeconds}s`
+                    : "Manuell"}
+                  {source.enabled && source.kind === "folder" && source.watch ? " · Watch" : ""}
+                </span>
+                <div className="actions">
+                  <Button size="sm" disabled={busy} onClick={() => void preview(source.id)}>
+                    Vorschau
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      busy ||
+                      !state.writesEnabled ||
+                      !state.oauthConfigured ||
+                      !(source.calendarId || state.defaultCalendarId || state.calendarConfigured) ||
+                      (source.folderMode === "snapshot" && !plan?.snapshotPreview?.token)
+                    }
+                    onClick={() =>
+                      void act(async () => {
+                        await synchronize(source);
+                      })
+                    }
+                  >
+                    Synchronisieren
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={edit}>
+                    Einstellungen
+                  </Button>
+                </div>
+              </>
+            )}
+          </section>
+          {source?.kind === "upload" && (
+            <label className="upload">
+              ICS-Datei
+              <Input
+                aria-label={"Upload für " + source.name}
+                type="file"
+                accept=".ics,text/calendar"
+                disabled={busy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void upload(source, file);
+                }}
+              />
+            </label>
+          )}
+          {source?.kind === "folder" && source.watch && (
+            <p className="source-status" role="status">
+              {!source.enabled
+                ? "Dateibeobachtung pausiert"
+                : state.watchStatuses?.[source.id]?.mode === "watching"
+                  ? "Dateibeobachtung aktiv"
+                  : state.watchStatuses?.[source.id]?.mode === "settling"
+                    ? "Dateien werden stabilisiert"
+                    : state.watchStatuses?.[source.id]?.mode === "polling"
+                      ? "Polling als Watch-Fallback"
+                      : "Dateibeobachtung wird gestartet"}
+            </p>
+          )}
+          {source && state.statuses[source.id] && (
+            <p role="status" className="source-status">
+              {state.statuses[source.id].running
+                ? "Abgleich läuft"
+                : state.statuses[source.id].ok
+                  ? (state.statuses[source.id].stats?.quarantinedSeries ?? 0) +
+                    (state.statuses[source.id].stats?.quarantinedGroups ?? 0)
+                    ? "Übrige Termine geprüft · " +
+                      ((state.statuses[source.id].stats?.quarantinedSeries ?? 0) +
+                        (state.statuses[source.id].stats?.quarantinedGroups ?? 0)) +
+                      " Quellgruppen zurückgestellt; bestehende Kopien geschützt"
+                    : (state.statuses[source.id].stats?.filesIgnored ?? 0) > 0
+                      ? "Ausgewählte Snapshot-Datei geprüft"
+                      : "Prüfung erfolgreich"
+                  : state.statuses[source.id].error}
+            </p>
+          )}
+          {source?.folderMode === "snapshot" &&
+            (state.statuses[source.id]?.stats?.filesIgnored ?? 0) > 0 && (
+              <p role="status" className="source-status">
+                {state.statuses[source.id].stats!.filesIgnored} weitere ICS-Dateien nicht
+                eingelesen. Nur die ausgewählte Snapshot-Datei wird synchronisiert.{" "}
+                {source.snapshotSelection === "latest-mtime"
+                  ? "Die neueste Dateizeit wählt genau einen Export; ältere Dateien werden nicht zusammengeführt."
+                  : "Für einen anderen Export: Snapshot-Dateiname in den Einstellungen ändern, Vorschau prüfen und bestätigen."}{" "}
+                Dateizeiten beweisen keine Neuheit.
+              </p>
+            )}
+          {source && state.statuses[source.id]?.progress && (
+            <p className="source-status">
+              {state.statuses[source.id].progress!.fetched} abgerufen ·{" "}
+              {state.statuses[source.id].progress!.changed} Änderungen ·{" "}
+              {state.statuses[source.id].progress!.skipped} unverändert ·{" "}
+              {state.statuses[source.id].progress!.written} geschrieben ·{" "}
+              {state.statuses[source.id].progress!.pending} offen
+              {state.statuses[source.id].progress!.resuming ? " · Wiederaufnahme" : ""}
+            </p>
+          )}
+          {source && state.statuses[source.id]?.retryAt && (
+            <p className="source-status">
+              Rate-Limit-Pause bis{" "}
+              {new Date(state.statuses[source.id].retryAt!).toLocaleString("de-DE")}. Kein
+              sofortiger Retry.
+            </p>
+          )}
+          {source && state.statuses[source.id]?.automaticPaused && (
+            <p className="source-status">
+              Automatik pausiert. Einstellungen prüfen; nach einer aktiven Rate-Limit-Pause
+              ausdrücklich erneut synchronisieren.
+            </p>
+          )}
+          {source &&
+            (state.statuses[source.id]?.stats?.filesArchived ?? 0) +
+              (state.statuses[source.id]?.stats?.filesDeleted ?? 0) +
+              (state.statuses[source.id]?.stats?.filesRetained ?? 0) >
+              0 && (
+              <p className="source-status">
+                Dateien: {state.statuses[source.id].stats?.filesArchived ?? 0} archiviert ·{" "}
+                {state.statuses[source.id].stats?.filesDeleted ?? 0} gelöscht ·{" "}
+                {state.statuses[source.id].stats?.filesRetained ?? 0} zurückgestellt
+              </p>
+            )}
+          {showForm && (
+            <details
+              className="settings"
+              open
+              onToggle={(e) => {
+                if (!e.currentTarget.open) setShowForm(false);
+              }}
+            >
+              <summary>{editing ? "Einstellungen" : "Neue Quelle"}</summary>
+              <form onSubmit={(e) => void save(e)} className="settings-grid">
+                <div className="wide actions">
+                  <Button
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                    disabled={busy || !state.oauthConfigured}
+                    onClick={() => void loadCalendars()}
+                  >
+                    Kalender laden
+                  </Button>
+                </div>
+                {calendarError && (
+                  <div className="wide muted" role="status">
+                    <p>{calendarError}</p>
+                    <p>
+                      Zusätzliche Leseberechtigung:{" "}
+                      <code>https://www.googleapis.com/auth/calendar.calendarlist.readonly</code>.
+                      Nach Freigabe lokal erneut verbinden:{" "}
+                      <code>npm run oauth:setup -- --with-calendar-list</code>. Danach Container neu
+                      starten und Kalender laden.
+                    </p>
+                  </div>
+                )}
+                <label className="wide">
+                  Zielkalender dieser Quelle
+                  <select
+                    aria-label="Zielkalender dieser Quelle"
+                    value={form.calendarId ?? ""}
+                    onChange={(e) => setForm({ ...form, calendarId: e.target.value })}
+                  >
+                    <option value="">
+                      Globalen Standard verwenden
+                      {state.defaultCalendarId
+                        ? " (" +
+                          (calendars.find((c) => c.id === state.defaultCalendarId)?.summary ??
+                            state.defaultCalendarId) +
+                          ")"
+                        : " · nicht gesetzt"}
+                    </option>
+                    {form.calendarId && !calendars.some((c) => c.id === form.calendarId) && (
+                      <option value={form.calendarId}>
+                        {form.calendarId} · noch nicht geprüft
+                      </option>
+                    )}
+                    {calendars.map((c) => (
+                      <option
+                        key={c.id}
+                        value={c.id}
+                        disabled={
+                          !c.writable || (form.kind === "google" && c.id === form.sourceCalendarId)
+                        }
+                      >
+                        {c.summary}
+                        {c.primary ? " · Hauptkalender" : ""}
+                        {!c.writable ? " · schreibgeschützt" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {calendars.length > 0 && (
+                  <label className="wide">
+                    Globaler Standard
+                    <select
+                      aria-label="Globaler Standard"
+                      value={state.defaultCalendarId ?? ""}
+                      disabled={busy}
+                      onChange={(e) => {
+                        const calendarId = e.target.value;
+                        void act(async () => {
+                          await api("default-calendar", {
+                            method: "PUT",
+                            body: JSON.stringify({ calendarId }),
+                          });
+                          setPlan(null);
+                          await refresh();
+                        });
+                      }}
+                    >
+                      <option value="">Kein Standard</option>
+                      {state.defaultCalendarId &&
+                        !calendars.some((c) => c.id === state.defaultCalendarId) && (
+                          <option value={state.defaultCalendarId}>
+                            {state.defaultCalendarId} · noch nicht geprüft
+                          </option>
+                        )}
+                      {calendars.map((c) => (
+                        <option
+                          key={c.id}
+                          value={c.id}
+                          disabled={
+                            !c.writable ||
+                            (form.kind === "google" && c.id === form.sourceCalendarId)
+                          }
+                        >
+                          {c.summary}
+                          {!c.writable ? " · schreibgeschützt" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <p className="wide muted">
+                  Zielwechsel lässt bisherige Termine im alten Kalender bestehen. Schreibgeschützte
+                  Kalender sind nicht auswählbar.
+                </p>
+                <label>
+                  Name
+                  <Input
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    required
+                    maxLength={80}
+                  />
+                </label>
+                <label>
+                  Typ
+                  <select
+                    aria-label="Typ"
+                    value={form.kind}
+                    disabled={!!editing}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        kind: e.target.value as Source["kind"],
+                        watch: e.target.value === "folder" && form.watch,
+                      })
+                    }
+                  >
+                    <option value="upload">Upload</option>
+                    <option value="file">Datei</option>
+                    <option value="folder">Ordner</option>
+                    <option value="url">URL</option>
+                    <option value="google">Google Calendar</option>
+                  </select>
+                </label>
+                {form.kind !== "upload" && form.kind !== "google" && (
+                  <label className="wide">
+                    {form.kind === "url"
+                      ? "URL"
+                      : form.kind === "folder"
+                        ? "Unterordner (optional; leer = ICS_SOURCE_DIR)"
+                        : "Pfad (relativ zur Quellwurzel)"}
+                    <Input
+                      type={form.kind === "url" ? "url" : "text"}
+                      value={form.location}
+                      placeholder={
+                        editing
+                          ? "Unverändert bei leerem Feld"
+                          : form.kind === "url"
+                            ? "https://…"
+                            : "."
+                      }
+                      onChange={(e) => setForm({ ...form, location: e.target.value })}
+                    />
+                  </label>
+                )}
+                {form.kind === "folder" && (
+                  <>
+                    <label>
+                      Ordnerbetrieb
+                      <select
+                        aria-label="Ordnerbetrieb"
+                        value={form.folderMode ?? "aggregate"}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            folderMode: e.target.value as Source["folderMode"],
+                            snapshotClip:
+                              e.target.value === "snapshot" ? form.snapshotClip : undefined,
+                            ...(e.target.value === "aggregate"
+                              ? {
+                                  snapshotSelection: undefined,
+                                  snapshotAutoApply: false,
+                                  clipSeriesMode: undefined,
+                                }
+                              : {}),
+                          })
+                        }
+                      >
+                        <option value="aggregate">Alle Dateien zusammenführen</option>
+                        <option value="snapshot">Einen Ersatzexport verwenden</option>
+                      </select>
+                    </label>
+                    <label>
+                      Dateibehandlung
+                      <select
+                        aria-label="Dateibehandlung"
+                        value={form.fileHandling ?? "keep"}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            fileHandling: e.target.value as Source["fileHandling"],
+                          })
+                        }
+                      >
+                        <option value="keep">Behalten</option>
+                        <option value="archive">Nach bestätigtem Import archivieren</option>
+                        <option value="delete">Nach bestätigtem Import löschen</option>
+                      </select>
+                    </label>
+                    {form.fileHandling && form.fileHandling !== "keep" && (
+                      <>
+                        <label className="wide checkbox">
+                          <input
+                            type="checkbox"
+                            required
+                            checked={!!form.immutableFilesConfirmed}
+                            onChange={(e) =>
+                              setForm({ ...form, immutableFilesConfirmed: e.target.checked })
+                            }
+                          />{" "}
+                          Der Exporter veröffentlicht fertige Dateien atomar und verändert
+                          veröffentlichte Dateien nie.
+                        </label>
+                        <p className="wide muted">
+                          Schreibbarer Quellmount und geschütztes /data erforderlich. Fehler
+                          behalten Eingaben. Löschen entfernt nur bestätigte Eingabedateien, nicht
+                          Kalendertermine. Archive und offene Claims liegen in geschützten
+                          Unterordnern.
+                        </p>
+                      </>
+                    )}
+                    {form.folderMode === "snapshot" && (
+                      <>
+                        <label>
+                          Dateiauswahl
+                          <select
+                            aria-label="Dateiauswahl"
+                            value={form.snapshotSelection ?? "explicit"}
+                            onChange={(e) =>
+                              setForm({
+                                ...form,
+                                snapshotSelection: e.target.value as Source["snapshotSelection"],
+                                snapshotAutoApply:
+                                  e.target.value === "explicit" ? false : form.snapshotAutoApply,
+                              })
+                            }
+                          >
+                            <option value="explicit">Fester Dateiname</option>
+                            <option value="latest-mtime">
+                              Neueste Änderungszeit · vertrauter Exporter
+                            </option>
+                          </select>
+                        </label>
+                        <label className="wide checkbox">
+                          <input
+                            type="checkbox"
+                            checked={!!form.snapshotAutoApply}
+                            disabled={
+                              form.snapshotSelection !== "latest-mtime" ||
+                              !form.snapshotClip?.completeExportConfirmed ||
+                              (form.fileHandling && form.fileHandling !== "keep")
+                            }
+                            onChange={(e) =>
+                              setForm({ ...form, snapshotAutoApply: e.target.checked })
+                            }
+                          />{" "}
+                          Neue vollständige Exporte automatisch übernehmen. Ich vertraue der
+                          Dateizeit als Veröffentlichungsreihenfolge.
+                        </label>
+                        <label>
+                          Serienabgleich
+                          <select
+                            aria-label="Serienabgleich"
+                            value={form.clipSeriesMode ?? "strict"}
+                            onChange={(e) =>
+                              setForm({
+                                ...form,
+                                clipSeriesMode: e.target.value as Source["clipSeriesMode"],
+                              })
+                            }
+                          >
+                            <option value="strict">Streng · Strukturänderungen stoppen</option>
+                            <option value="preserve-master">
+                              Wöchentliche Clip-Serien erhalten
+                            </option>
+                            <option value="window-reconcile">
+                              Instanzen nur im Clip-Fenster ersetzen
+                            </option>
+                          </select>
+                        </label>
+                        <label>
+                          Snapshot-Dateiname
+                          <Input
+                            aria-label="Snapshot-Dateiname"
+                            required={form.snapshotSelection !== "latest-mtime"}
+                            value={form.snapshotFile ?? ""}
+                            placeholder="weekly.ics"
+                            onChange={(e) => setForm({ ...form, snapshotFile: e.target.value })}
+                          />
+                        </label>
+                        <label className="wide checkbox">
+                          <input
+                            type="checkbox"
+                            checked={!!form.snapshotClip}
+                            onChange={(e) =>
+                              setForm({
+                                ...form,
+                                snapshotClip: e.target.checked
+                                  ? {
+                                      completeExportConfirmed: false,
+                                      boundary: "protect-boundary",
+                                      ordering: "manual-confirm",
+                                    }
+                                  : undefined,
+                                snapshotScope: undefined,
+                                ...(!e.target.checked
+                                  ? {
+                                      snapshotSelection: undefined,
+                                      snapshotAutoApply: false,
+                                      clipSeriesMode: undefined,
+                                    }
+                                  : {}),
+                              })
+                            }
+                          />{" "}
+                          VCALENDAR-Clip-Fenster verwenden
+                        </label>
+                        {form.snapshotClip ? (
+                          <>
+                            <label className="wide checkbox">
+                              <input
+                                type="checkbox"
+                                checked={form.snapshotClip.completeExportConfirmed}
+                                onChange={(e) =>
+                                  setForm({
+                                    ...form,
+                                    snapshotClip: {
+                                      ...form.snapshotClip!,
+                                      completeExportConfirmed: e.target.checked,
+                                    },
+                                    ...(!e.target.checked
+                                      ? { snapshotSelection: undefined, snapshotAutoApply: false }
+                                      : {}),
+                                  })
+                                }
+                              />{" "}
+                              Der Export enthält alle Termine im Clip-Fenster, ohne zusätzliche
+                              Stunden-, Auswahl- oder Detailfilter.
+                            </label>
+                            <label>
+                              Clip-Endgrenze
+                              <select
+                                aria-label="Clip-Endgrenze"
+                                value={form.snapshotClip.boundary}
+                                onChange={(e) =>
+                                  setForm({
+                                    ...form,
+                                    snapshotClip: {
+                                      ...form.snapshotClip!,
+                                      boundary: e.target.value as "exclusive" | "protect-boundary",
+                                    },
+                                  })
+                                }
+                              >
+                                <option value="protect-boundary">
+                                  Grenzberührende Termine schützen
+                                </option>
+                                <option value="exclusive">
+                                  Exporter garantiert exklusive Endgrenze
+                                </option>
+                              </select>
+                            </label>
+                            <p className="wide muted">
+                              Dateizeiten beweisen keine inhaltliche Neuheit. Standardmäßig wird die
+                              Reihenfolge manuell bestätigt; die Automatik vertraut ausdrücklich der
+                              Veröffentlichungsreihenfolge des Exporters. Bekannte alte Versionen
+                              werden blockiert; unbekannte alte Dateien können nicht erkannt werden.
+                              /data hält diese Reihenfolge auch bei Neustart. Fehlende oder doppelte
+                              Clip-Grenzen stoppen den Import.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            {" "}
+                            <label>
+                              Exportumfang
+                              <select
+                                aria-label="Exportumfang"
+                                value={form.snapshotScope?.authority ?? "unknown"}
+                                onChange={(e) =>
+                                  setForm({
+                                    ...form,
+                                    snapshotScope: {
+                                      authority: e.target.value as "unknown" | "full" | "window",
+                                      ...(e.target.value === "window"
+                                        ? {
+                                            window: form.snapshotScope?.window ?? {
+                                              start: "",
+                                              end: "",
+                                              timezone: form.rules.floatingTimezone,
+                                            },
+                                          }
+                                        : {}),
+                                    },
+                                  })
+                                }
+                              >
+                                <option value="unknown">
+                                  Unbekannt · keine fehlenden Termine absagen
+                                </option>
+                                <option value="full">
+                                  Bestätigter vollständiger Kalenderexport
+                                </option>
+                                <option value="window">
+                                  Bestätigtes Zeitfenster / Kalenderwoche
+                                </option>
+                              </select>
+                            </label>
+                            {form.snapshotScope?.authority === "window" && (
+                              <>
+                                <label>
+                                  Fensterbeginn
+                                  <Input
+                                    aria-label="Fensterbeginn"
+                                    type="date"
+                                    required
+                                    value={form.snapshotScope.window?.start ?? ""}
+                                    onChange={(e) =>
+                                      setForm({
+                                        ...form,
+                                        snapshotScope: {
+                                          authority: "window",
+                                          window: {
+                                            ...form.snapshotScope!.window!,
+                                            start: e.target.value,
+                                          },
+                                        },
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label>
+                                  Fensterende (exklusiv)
+                                  <Input
+                                    aria-label="Fensterende (exklusiv)"
+                                    type="date"
+                                    required
+                                    value={form.snapshotScope.window?.end ?? ""}
+                                    onChange={(e) =>
+                                      setForm({
+                                        ...form,
+                                        snapshotScope: {
+                                          authority: "window",
+                                          window: {
+                                            ...form.snapshotScope!.window!,
+                                            end: e.target.value,
+                                          },
+                                        },
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label>
+                                  Fensterzeitzone
+                                  <Input
+                                    aria-label="Fensterzeitzone"
+                                    required
+                                    value={form.snapshotScope.window?.timezone ?? ""}
+                                    onChange={(e) =>
+                                      setForm({
+                                        ...form,
+                                        snapshotScope: {
+                                          authority: "window",
+                                          window: {
+                                            ...form.snapshotScope!.window!,
+                                            timezone: e.target.value,
+                                          },
+                                        },
+                                      })
+                                    }
+                                  />
+                                </label>
+                              </>
+                            )}
+                          </>
+                        )}
+                        <p className="wide muted">
+                          /data speichert die bestätigte Exportversion. Standardmäßig benötigt jede
+                          neue Version Vorschau und Bestätigung. Automatische Übernahme ist ein
+                          gesondertes Opt-in für vollständige Exporte eines vertrauten Exporters.
+                          Keine Fensterableitung aus Terminen. Serien und grenzüberschreitende
+                          Termine bleiben bei Zeitfenstern geschützt.
+                        </p>
+                      </>
+                    )}
+                  </>
+                )}
+                {form.kind === "google" && (
+                  <>
+                    <label className="wide">
+                      Google-Quellkalender
+                      <select
+                        aria-label="Google-Quellkalender"
+                        required
+                        value={form.sourceCalendarId ?? ""}
+                        onChange={(e) =>
+                          setForm({ ...form, sourceCalendarId: e.target.value || undefined })
+                        }
+                      >
+                        <option value="">Quellkalender auswählen</option>
+                        {form.sourceCalendarId &&
+                          !calendars.some((c) => c.id === form.sourceCalendarId) && (
+                            <option value={form.sourceCalendarId}>
+                              Gespeicherter Quellkalender · noch nicht geprüft
+                            </option>
+                          )}
+                        {calendars
+                          .filter((c) => c.accessRole !== "freeBusyReader")
+                          .map((c) => (
+                            <option
+                              key={c.id}
+                              value={c.id}
+                              disabled={c.id === (form.calendarId || state.defaultCalendarId)}
+                            >
+                              {c.summary}
+                              {!c.writable ? " · nur lesbar" : ""}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <p className="wide muted">
+                      Änderungen per Intervall oder Cron abrufen. Kein garantierter
+                      Echtzeitabgleich; Push benötigt einen HTTPS-Endpunkt und erneuerte Kanäle.
+                    </p>
+                  </>
+                )}
+                <div className="field">
+                  <div className="field-label">
+                    <label htmlFor="busy-mode">Busy-Regel</label>
+                    <InfoTooltip label="Busy-Regel">
+                      {
+                        "Outlook: nur Microsoft BUSY; FREE und TENTATIVE nicht. Fehlt der Status, gilt TRANSP. RFC: TRANSPARENT nicht, OPAQUE oder fehlendes TRANSP ja; Outlook-Status ignoriert. Alle: kein Busy-Filter. Titelfilter und Absagen gelten weiterhin."
+                      }
+                    </InfoTooltip>
+                  </div>
+                  <select
+                    id="busy-mode"
+                    value={form.rules.busyMode}
+                    onChange={(e) =>
+                      rule("busyMode", e.target.value as Source["rules"]["busyMode"])
+                    }
+                  >
+                    <option value="outlook_busy">Outlook BUSY / TRANSP</option>
+                    <option value="rfc">RFC OPAQUE</option>
+                    <option value="all">Alle</option>
+                  </select>
+                </div>
+                <label>
+                  Titel ausschließen (RegEx)
+                  <Input
+                    value={form.rules.excludeRegex}
+                    onChange={(e) => rule("excludeRegex", e.target.value)}
+                    maxLength={256}
+                  />
+                </label>
+                <label>
+                  Ort einschließen (RegEx)
+                  <Input
+                    value={form.rules.locationIncludeRegex ?? ""}
+                    onChange={(e) => rule("locationIncludeRegex", e.target.value)}
+                    maxLength={256}
+                  />
+                </label>
+                <label>
+                  Ort ausschließen (RegEx)
+                  <Input
+                    value={form.rules.locationExcludeRegex ?? ""}
+                    onChange={(e) => rule("locationExcludeRegex", e.target.value)}
+                    maxLength={256}
+                  />
+                </label>
+                <label>
+                  Ortfilter-Flags
+                  <Input
+                    value={form.rules.locationRegexFlags ?? "iu"}
+                    onChange={(e) => rule("locationRegexFlags", e.target.value)}
+                    maxLength={5}
+                  />
+                </label>
+                <p className="wide muted">
+                  Titel- und Ortfilter prüfen die Originalwerte vor Transforms. Einschließen muss
+                  passen; Ausschließen darf nicht passen. Leerer Ort wird als leerer Text geprüft.
+                  RE2: keine Lookarounds oder Rückverweise; Unicode ist immer aktiv.
+                </p>
+                <fieldset className="wide transform-list">
+                  <legend>Titel-/Orttransforms · erste passende Regel gewinnt</legend>
+                  {(form.rules.transforms ?? []).map((transform, index) => (
+                    <div className="settings-grid" key={index}>
+                      <label>
+                        Feld
+                        <select
+                          aria-label={"Transform " + (index + 1) + " Feld"}
+                          value={transform.field}
+                          onChange={(e) =>
+                            changeTransform(index, {
+                              field: e.target.value as "title" | "location",
+                            })
+                          }
+                        >
+                          <option value="title">Titel</option>
+                          <option value="location">Ort</option>
+                        </select>
+                      </label>
+                      <label>
+                        Muster
+                        <Input
+                          aria-label={"Transform " + (index + 1) + " Muster"}
+                          required
+                          maxLength={256}
+                          value={transform.pattern}
+                          onChange={(e) => changeTransform(index, { pattern: e.target.value })}
+                        />
+                      </label>
+                      <label>
+                        Flags
+                        <Input
+                          aria-label={"Transform " + (index + 1) + " Flags"}
+                          maxLength={5}
+                          value={transform.flags}
+                          onChange={(e) => changeTransform(index, { flags: e.target.value })}
+                        />
+                      </label>
+                      <label>
+                        Ersetzung
+                        <Input
+                          aria-label={"Transform " + (index + 1) + " Ersetzung"}
+                          maxLength={1024}
+                          value={transform.replacement}
+                          onChange={(e) => changeTransform(index, { replacement: e.target.value })}
+                        />
+                      </label>
+                      <div className="actions">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={index === 0}
+                          onClick={() => moveTransform(index, -1)}
+                        >
+                          Nach oben
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={index === (form.rules.transforms?.length ?? 0) - 1}
+                          onClick={() => moveTransform(index, 1)}
+                        >
+                          Nach unten
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() =>
+                            rule(
+                              "transforms",
+                              (form.rules.transforms ?? []).filter((_, i) => i !== index),
+                            )
+                          }
+                        >
+                          Entfernen
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={(form.rules.transforms?.length ?? 0) >= 32}
+                    onClick={() =>
+                      rule("transforms", [
+                        ...(form.rules.transforms ?? []),
+                        { field: "title", pattern: "", flags: "iu", replacement: "" },
+                      ])
+                    }
+                  >
+                    Transform hinzufügen
+                  </Button>
+                  <p className="muted">
+                    Eine Regel für die gesamte Liste; auch unveränderte Ersetzungen verbrauchen den
+                    ersten Treffer. Keine Kaskade. Flags g = alle Treffer dieser Regel, i =
+                    Groß-/Kleinschreibung ignorieren, m = Zeilen, s = Punkt inklusive Zeilenumbruch,
+                    u = Unicode. Ersetzung: {"$1, $2, $&, $<name>; $$"} ergibt ein Dollarzeichen.
+                    Kein ausführbarer Code. Nicht ersetzte Titelteile bleiben sichtbar; Orte
+                    erscheinen nur mit „Ort übernehmen“. Zusagenzahl bleibt angehängt. Nach
+                    Speichern Vorschau prüfen.
+                  </p>
+                </fieldset>
+                <label>
+                  Floating-Zeitzone
+                  <Input
+                    value={form.rules.floatingTimezone}
+                    onChange={(e) => rule("floatingTimezone", e.target.value)}
+                    required
+                  />
+                </label>
+                <div className="field">
+                  <div className="field-label">
+                    <label htmlFor="interval-seconds">Intervall (Sekunden)</label>
+                    <InfoTooltip label="Intervall (Sekunden)">
+                      {
+                        "Abstand zwischen automatischen Läufen: 300 Sekunden = 5 Minuten, mindestens 60 Sekunden. Nur mit Automatisch prüfen; ein Cron-Ausdruck hat Vorrang."
+                      }
+                    </InfoTooltip>
+                  </div>
+                  <Input
+                    id="interval-seconds"
+                    type="number"
+                    min={60}
+                    max={604800}
+                    value={form.intervalSeconds}
+                    onChange={(e) => setForm({ ...form, intervalSeconds: Number(e.target.value) })}
+                  />
+                </div>
+                <label>
+                  Cron (optional)
+                  <Input
+                    value={form.cron ?? ""}
+                    placeholder="*/5 * * * *"
+                    onChange={(e) => setForm({ ...form, cron: e.target.value || undefined })}
+                  />
+                </label>
+                <label>
+                  Cron-Zeitzone
+                  <Input
+                    value={form.cronTimezone}
+                    onChange={(e) => setForm({ ...form, cronTimezone: e.target.value })}
+                  />
+                </label>
+                {form.kind === "folder" && (
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={form.watch}
+                      onChange={(e) => setForm({ ...form, watch: e.target.checked })}
+                    />{" "}
+                    Ordneränderungen beobachten
+                  </label>
+                )}
+                <div className="checkbox field">
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={form.rules.includeLocation}
+                      onChange={(e) => rule("includeLocation", e.target.checked)}
+                    />{" "}
+                    Ort übernehmen
+                  </label>
+                  <InfoTooltip label="Ort übernehmen">
+                    Originalort in Vorschau und Ziel übernehmen. Standardmäßig aus; beim Ausschalten
+                    wird ein zuvor kopierter Ort beim nächsten freigegebenen Abgleich entfernt.
+                  </InfoTooltip>
+                </div>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={form.rules.acceptedCount}
+                    onChange={(e) => rule("acceptedCount", e.target.checked)}
+                  />{" "}
+                  Zusagenzahl
+                </label>
+                <div className="checkbox field">
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={form.enabled}
+                      disabled={form.kind === "upload"}
+                      onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
+                    />{" "}
+                    Automatisch prüfen
+                  </label>
+                  <InfoTooltip label="Automatisch prüfen">
+                    {
+                      "Datei, Ordner, URL oder Google Calendar nach Intervall/Cron prüfen; Uploads nicht. Bei gesperrtem Google-Schreiben nur Vorschau. Bei ENABLE_GOOGLE_WRITES=true automatischer Sync; OAuth und Zielkalender müssen eingerichtet sein."
+                    }
+                  </InfoTooltip>
+                </div>
+                <div className="wide actions">
+                  <Button size="sm" disabled={busy}>
+                    Speichern
+                  </Button>
+                  <Button
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setShowForm(false)}
+                  >
+                    Abbrechen
+                  </Button>
+                </div>
+                <p className="wide muted">
+                  Änderungen bis Neustart · dauerhaft über ENV-Export. Watch: nur direkte
+                  ICS-Dateien, stabilisiert und entprellt; Intervall/Cron bleibt aktiv.
+                </p>
+                {editing && <code className="wide muted">{editing}</code>}
+              </form>
+            </details>
+          )}
+          {plan && (
+            <section className="preview">
+              <div className="preview-header">
+                <h2>Vorschau</h2>
+                <span className="muted">
+                  {plan.stats.upserts} Termine ·{" "}
+                  {plan.stats.explicitCancellations + (plan.stats.reconciledCancellations ?? 0)}{" "}
+                  Ausschlüsse / Absagen
+                </span>
+              </div>
+              {plan.snapshotPreview && (
+                <div className="snapshot-summary">
+                  {plan.snapshotPreview.clipWindow && (
+                    <p>
+                      VCALENDAR-Clip: {plan.snapshotPreview.clipWindow.start} →{" "}
+                      {plan.snapshotPreview.clipWindow.end}; angewandter Umfang und Grenzschutz
+                      unten.
+                    </p>
+                  )}
+                  <p>
+                    {plan.snapshotPreview.added} neu · {plan.snapshotPreview.changed} geändert ·{" "}
+                    {plan.snapshotPreview.unchanged} unverändert ·{" "}
+                    {plan.snapshotPreview.proposedRemovals.length} Entfernungsvorschläge ·{" "}
+                    {plan.snapshotPreview.protectedAbsent} fehlende Einträge geschützt
+                  </p>
+                  <p>
+                    Umfang:{" "}
+                    {plan.snapshotPreview.authority === "full"
+                      ? "vollständiger Export"
+                      : plan.snapshotPreview.authority === "window"
+                        ? `${plan.snapshotPreview.start} bis ${plan.snapshotPreview.end} (exklusiv), ${plan.snapshotPreview.timezone}`
+                        : "unbekannt"}
+                  </p>
+                  {plan.snapshotPreview.removalTimes.slice(0, 200).map((r) => (
+                    <p key={r.key}>
+                      Vorgeschlagene Absage: {r.start ? displayTime(r.start) : "—"} →{" "}
+                      {r.end ? displayTime(r.end) : "—"}
+                    </p>
+                  ))}
+                  {plan.snapshotPreview.warnings.map((w) => (
+                    <p className="muted" key={w}>
+                      {w}
+                    </p>
+                  ))}
+                </div>
+              )}
+              <div className="table-scroll">
+                <table aria-label="Anonymisierte Termine">
+                  <thead>
+                    <tr>
+                      <th>Titel / Aktion</th>
+                      <th>Beginn</th>
+                      <th>Ende (exklusiv)</th>
+                      {plan.items.some((i) => !!i.event?.location) && <th>Ort</th>}
+                      <th>Zuordnung</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {plan.items.slice(0, 200).map((item) => (
+                      <tr key={item.key}>
+                        <td>
+                          {item.cancel ? "Ausgeschlossen / abgesagt" : item.event!.summary}
+                          {item.parent ? (
+                            <small>Serienausnahme</small>
+                          ) : item.event?.recurrence ? (
+                            <small>Serie</small>
+                          ) : null}
+                        </td>
+                        <td>{item.event ? displayTime(item.event.start) : "—"}</td>
+                        <td>{item.event ? displayTime(item.event.end) : "—"}</td>
+                        {plan.items.some((i) => !!i.event?.location) && (
+                          <td>{item.event?.location ?? "—"}</td>
+                        )}
+                        <td>
+                          <code title={item.key}>{item.key.slice(0, 12)}…</code>
+                          {item.original && (
+                            <small>Ursprünglich: {displayTime(item.original)}</small>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {!plan.items.length && <p className="muted">Keine Termine.</p>}
+              {plan.items.length > 200 && (
+                <p className="muted">200 von {plan.items.length} Einträgen</p>
+              )}
+              {plan.warnings.length > 0 && (
+                <details className="warnings">
+                  <summary>Hinweise ({plan.warnings.length})</summary>
+                  {plan.warnings.map((w) => (
+                    <p key={w}>{w}</p>
+                  ))}
+                </details>
+              )}
+            </section>
+          )}
+        </>
+      )}
+    </main>
+  );
 }

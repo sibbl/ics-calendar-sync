@@ -1,8 +1,8 @@
-import path from 'node:path';
-import type {Config} from './config.js';
-import {sourceSchema} from '../shared/contracts.js';
-export const DEMO_ID='00000000-0000-4000-8000-000000000001';
-export const SYNTHETIC_ICS=`BEGIN:VCALENDAR\r
+import path from "node:path";
+import type { Config } from "./config.js";
+import { sourceSchema } from "../shared/contracts.js";
+export const DEMO_ID = "00000000-0000-4000-8000-000000000001";
+export const SYNTHETIC_ICS = `BEGIN:VCALENDAR\r
 VERSION:2.0\r
 PRODID:-//Synthetic local demo//EN\r
 X-CLIPSTART:20260101T000000Z\r
@@ -30,4 +30,18 @@ X-MICROSOFT-CDO-BUSYSTATUS:BUSY\r
 END:VEVENT\r
 END:VCALENDAR\r
 `;
-export function demoConfig():Config{return {adminToken:'synthetic-demo-only',clientId:'',clientSecret:'',refreshToken:'',calendarId:'',writes:false,watchRoot:path.resolve('example-sources'),sources:[sourceSchema.parse({id:DEMO_ID,name:'Synthetischer Kalender',kind:'upload'})],demo:true,port:8080,host:'127.0.0.1'};}
+export function demoConfig(): Config {
+  return {
+    adminToken: "synthetic-demo-only",
+    clientId: "",
+    clientSecret: "",
+    refreshToken: "",
+    calendarId: "",
+    writes: false,
+    watchRoot: path.resolve("example-sources"),
+    sources: [sourceSchema.parse({ id: DEMO_ID, name: "Synthetischer Kalender", kind: "upload" })],
+    demo: true,
+    port: 8080,
+    host: "127.0.0.1",
+  };
+}

@@ -1,39 +1,225 @@
-import {it,expect} from 'vitest';
-import {preserveClippedSeries} from '../server/clipped-series';
-import {parseCalendar} from '../server/calendar';
-import {syncPlan} from '../server/google';
-import {ics,MASTER,SID,SOURCE,FakeGoogle} from './fixtures';
-import {sourceSchema} from '../shared/contracts';
-const source=sourceSchema.parse({...SOURCE,kind:'folder',calendarId:'synthetic-output',folderMode:'snapshot',snapshotFile:'synthetic.ics',clipSeriesMode:'preserve-master',snapshotClip:{completeExportConfirmed:true,boundary:'protect-boundary',ordering:'manual-confirm'}});
-function fixture(){const original=parseCalendar(ics([MASTER.replace('COUNT=4','COUNT=8')]),SID,{},source.calendarId);const next=parseCalendar(ics([MASTER.replaceAll('20260323','20260406').replace('COUNT=4','COUNT=6')]),SID,{},source.calendarId);next.clipWindow={start:'2026-04-06T00:00:00.000Z',end:'2026-05-18T00:00:00.000Z'};const item=original.items[0]!;return {original,next,target:{id:item.key,...item.event!,etag:'synthetic-etag'}};}
-it('preserves earlier master, original COUNT and DST-safe occurrences for a shifted clip',()=>{const {next,target}=fixture();const p=preserveClippedSeries(next,source,[target]);expect(p.items[0]!.event!.start).toEqual(target.start);expect(p.items[0]!.event!.recurrence).toEqual(target.recurrence);expect(p.stats.normalizedClipSeries).toBe(1);expect(next.items[0]!.event!.start).not.toEqual(target.start);});
-it('keeps strict/default and unconfirmed clips protected',()=>{const {next,target}=fixture();expect(preserveClippedSeries(next,{...source,clipSeriesMode:undefined},[target])).toBe(next);expect(()=>preserveClippedSeries(next,{...source,snapshotClip:{...source.snapshotClip!,completeExportConfirmed:false}},[target])).toThrow('Clip-Serie');});
-it('rejects genuine missing occurrences, changed duration, foreign ownership and unbounded rules',()=>{for(const change of ['weekday','duration','owner','rule']){const {next,target}=fixture();if(change==='weekday')next.items[0]!.event!.recurrence=['RRULE:FREQ=WEEKLY;COUNT=6;BYDAY=TU'];if(change==='duration')next.items[0]!.event!.end={dateTime:'2026-04-06T12:00:00+02:00',timeZone:'Europe/Berlin'};if(change==='owner')target.extendedProperties.private.source='synthetic-other';if(change==='rule')next.items[0]!.event!.recurrence=['RRULE:FREQ=WEEKLY;BYDAY=MO'];expect(()=>preserveClippedSeries(next,source,[target])).toThrow('Clip-Serie');}});
-it('merges dates inside the window but retains old outside and boundary dates',()=>{const {next,target}=fixture();target.recurrence!.push('EXDATE:20260330T080000Z,20260518T080000Z');next.items[0]!.event!.recurrence!.push('EXDATE:20260413T080000Z','RDATE:20260414T080000Z');const p=preserveClippedSeries(next,source,[target]);expect(p.items[0]!.event!.recurrence).toEqual(['RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO','EXDATE:20260330T080000Z,20260413T080000Z,20260518T080000Z','RDATE:20260414T080000Z']);expect(p.items[0]!.clipSeriesEtag).toBe('synthetic-etag');});
-it('rejects new outside-window date additions',()=>{const {next,target}=fixture();next.items[0]!.event!.recurrence!.push('RDATE:20260519T080000Z');expect(()=>preserveClippedSeries(next,source,[target])).toThrow('Clip-Serie');});
-it('only PATCHes bounded recurrence changes and metadata, never master times',async()=>{const {next,target}=fixture();next.items[0]!.event!.recurrence!.push('EXDATE:20260413T080000Z');const p=preserveClippedSeries(next,source,[target]),g=new FakeGoogle();g.events.set(target.id,target);await syncPlan(p,source,g);expect(g.calls).toHaveLength(1);expect(g.calls[0]!.method).toBe('PATCH');expect(g.calls[0]!.body.start).toBeUndefined();expect(g.calls[0]!.body.end).toBeUndefined();expect(g.calls[0]!.body.recurrence).toEqual(['RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO','EXDATE:20260413T080000Z']);expect(g.calls[0]!.etag).toBe('synthetic-etag');});
-it('stops before all writes if approved series ETag has changed',async()=>{const {next,target}=fixture();next.items[0]!.event!.recurrence!.push('EXDATE:20260413T080000Z');const p=preserveClippedSeries(next,source,[target]),g=new FakeGoogle();g.events.set(target.id,{...target,etag:'changed'});await expect(syncPlan(p,source,g)).rejects.toThrow();expect(g.calls).toEqual([]);});
-it('extends a clipped tail with bounded RDATEs without extending the original RRULE',()=>{const {next,target}=fixture();target.recurrence=['RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=MO'];const p=preserveClippedSeries(next,source,[target]);expect(p.items[0]!.event!.recurrence).toEqual(['RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=MO','RDATE:20260420T080000Z,20260427T080000Z,20260504T080000Z,20260511T080000Z']);});
-it('shortens only in-window instances using EXDATE, keeping original outside occurrences',()=>{const {next,target}=fixture();next.items[0]!.event!.recurrence=['RRULE:FREQ=WEEKLY;COUNT=2;BYDAY=MO'];const p=preserveClippedSeries(next,source,[target]);expect(p.items[0]!.event!.recurrence).toEqual(['RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO','EXDATE:20260420T080000Z,20260427T080000Z,20260504T080000Z,20260511T080000Z']);});
-it('does not recreate a series removed after its bounded migration preview',async()=>{const {next,target}=fixture();next.items[0]!.event!.recurrence!.push('EXDATE:20260413T080000Z');const p=preserveClippedSeries(next,source,[target]),g=new FakeGoogle();await expect(syncPlan(p,source,g)).rejects.toThrow('nach Vorschau');expect(g.calls).toEqual([]);});
-it('treats Google local-TZID exception serialization as unchanged on repeat',async()=>{const {next,target}=fixture();next.items[0]!.event!.recurrence!.push('EXDATE:20260413T080000Z','RDATE:20260414T080000Z,20260421T080000Z');target.recurrence!.push('EXDATE;TZID=Europe/Berlin:20260413T100000','RDATE;TZID=Europe/Berlin:20260421T100000','RDATE;TZID=Europe/Berlin:20260414T100000');const p=preserveClippedSeries(next,source,[target]);expect(p.items[0]!.event!.recurrence).toEqual(target.recurrence);expect(p.items[0]!.clipSeriesEtag).toBeUndefined();expect(p.stats.clipOccurrencesAdded).toBe(0);expect(p.stats.clipOccurrencesCancelled).toBe(0);const g=new FakeGoogle();g.events.set(target.id,target);const result=await syncPlan(p,source,g);expect(result.unchanged).toBe(1);expect(g.calls).toEqual([]);});
-
-it('does not validate irrelevant far-future DST occurrences when checking a short clip grid',()=>{const {next,target}=fixture();target.start={dateTime:'2026-03-23T02:30:00+01:00',timeZone:'Europe/Berlin'};target.end={dateTime:'2026-03-23T03:30:00+01:00',timeZone:'Europe/Berlin'};next.items[0]!.event!.start={dateTime:'2026-04-06T02:30:00+02:00',timeZone:'Europe/Berlin'};next.items[0]!.event!.end={dateTime:'2026-04-06T03:30:00+02:00',timeZone:'Europe/Berlin'};expect(preserveClippedSeries(next,source,[target]).stats.normalizedClipSeries).toBe(1);});
-
-it('keeps unchanged RDATE-only clip occurrences after the finite RRULE has ended',async()=>{
- const {next,target}=fixture();next.clipWindow={start:'2041-07-01T00:00:00.000Z',end:'2041-08-01T00:00:00.000Z'};target.recurrence!.push('RDATE:20410708T080000Z');next.items[0]!.event!.recurrence!.push('RDATE:20410708T080000Z');
- const plan=preserveClippedSeries(next,source,[target]);expect(plan.items[0]!.event!.recurrence).toEqual(target.recurrence);expect(plan.items[0]!.clipSeriesEtag).toBeUndefined();expect(plan.stats.clipOccurrencesAdded).toBe(0);expect(plan.stats.clipOccurrencesCancelled).toBe(0);
- const google=new FakeGoogle();google.events.set(target.id,target);const result=await syncPlan(plan,source,google);expect(result.unchanged).toBe(1);expect(google.calls).toEqual([]);
+import { it, expect } from "vitest";
+import { preserveClippedSeries } from "../server/clipped-series";
+import { parseCalendar } from "../server/calendar";
+import { syncPlan } from "../server/google";
+import { ics, MASTER, SID, SOURCE, FakeGoogle } from "./fixtures";
+import { sourceSchema } from "../shared/contracts";
+const source = sourceSchema.parse({
+  ...SOURCE,
+  kind: "folder",
+  calendarId: "synthetic-output",
+  folderMode: "snapshot",
+  snapshotFile: "synthetic.ics",
+  clipSeriesMode: "preserve-master",
+  snapshotClip: {
+    completeExportConfirmed: true,
+    boundary: "protect-boundary",
+    ordering: "manual-confirm",
+  },
 });
-it('reconciles explicit RDATE-only changes inside the clip while preserving outside dates and master times',async()=>{
- const {next,target}=fixture();next.clipWindow={start:'2041-07-01T00:00:00.000Z',end:'2041-08-01T00:00:00.000Z'};target.recurrence!.push('RDATE:20400901T080000Z,20410708T080000Z');next.items[0]!.event!.recurrence!.push('RDATE:20410709T080000Z');
- const plan=preserveClippedSeries(next,source,[target]);expect(plan.items[0]!.event!.recurrence).toEqual(['RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO','RDATE:20400901T080000Z,20410709T080000Z']);expect(plan.stats.clipOccurrencesAdded).toBe(1);expect(plan.stats.clipOccurrencesCancelled).toBe(1);
- const google=new FakeGoogle();google.events.set(target.id,target);await syncPlan(plan,source,google);expect(google.calls).toHaveLength(1);expect(google.calls[0]!.method).toBe('PATCH');expect(google.calls[0]!.body.start).toBeUndefined();expect(google.calls[0]!.body.end).toBeUndefined();
+function fixture() {
+  const original = parseCalendar(
+    ics([MASTER.replace("COUNT=4", "COUNT=8")]),
+    SID,
+    {},
+    source.calendarId,
+  );
+  const next = parseCalendar(
+    ics([MASTER.replaceAll("20260323", "20260406").replace("COUNT=4", "COUNT=6")]),
+    SID,
+    {},
+    source.calendarId,
+  );
+  next.clipWindow = { start: "2026-04-06T00:00:00.000Z", end: "2026-05-18T00:00:00.000Z" };
+  const item = original.items[0]!;
+  return { original, next, target: { id: item.key, ...item.event!, etag: "synthetic-etag" } };
+}
+it("preserves earlier master, original COUNT and DST-safe occurrences for a shifted clip", () => {
+  const { next, target } = fixture();
+  const p = preserveClippedSeries(next, source, [target]);
+  expect(p.items[0]!.event!.start).toEqual(target.start);
+  expect(p.items[0]!.event!.recurrence).toEqual(target.recurrence);
+  expect(p.stats.normalizedClipSeries).toBe(1);
+  expect(next.items[0]!.event!.start).not.toEqual(target.start);
 });
-it('still stops when no effective clip occurrences remain or RDATEs touch the protected end',()=>{
- for(const value of ['none','excluded','boundary']){const {next,target}=fixture();next.clipWindow={start:'2041-07-01T00:00:00.000Z',end:'2041-08-01T00:00:00.000Z'};
-  if(value==='excluded')next.items[0]!.event!.recurrence!.push('RDATE:20410708T080000Z','EXDATE:20410708T080000Z');
-  if(value==='boundary'){next.clipWindow.end='2041-08-01T09:00:00.000Z';next.items[0]!.event!.recurrence!.push('RDATE:20410801T080000Z');}
-  expect(()=>preserveClippedSeries(next,source,[target])).toThrow('Clip-Serie');
- }
+it("keeps strict/default and unconfirmed clips protected", () => {
+  const { next, target } = fixture();
+  expect(preserveClippedSeries(next, { ...source, clipSeriesMode: undefined }, [target])).toBe(
+    next,
+  );
+  expect(() =>
+    preserveClippedSeries(
+      next,
+      { ...source, snapshotClip: { ...source.snapshotClip!, completeExportConfirmed: false } },
+      [target],
+    ),
+  ).toThrow("Clip-Serie");
+});
+it("rejects genuine missing occurrences, changed duration, foreign ownership and unbounded rules", () => {
+  for (const change of ["weekday", "duration", "owner", "rule"]) {
+    const { next, target } = fixture();
+    if (change === "weekday")
+      next.items[0]!.event!.recurrence = ["RRULE:FREQ=WEEKLY;COUNT=6;BYDAY=TU"];
+    if (change === "duration")
+      next.items[0]!.event!.end = {
+        dateTime: "2026-04-06T12:00:00+02:00",
+        timeZone: "Europe/Berlin",
+      };
+    if (change === "owner") target.extendedProperties.private.source = "synthetic-other";
+    if (change === "rule") next.items[0]!.event!.recurrence = ["RRULE:FREQ=WEEKLY;BYDAY=MO"];
+    expect(() => preserveClippedSeries(next, source, [target])).toThrow("Clip-Serie");
+  }
+});
+it("merges dates inside the window but retains old outside and boundary dates", () => {
+  const { next, target } = fixture();
+  target.recurrence!.push("EXDATE:20260330T080000Z,20260518T080000Z");
+  next.items[0]!.event!.recurrence!.push("EXDATE:20260413T080000Z", "RDATE:20260414T080000Z");
+  const p = preserveClippedSeries(next, source, [target]);
+  expect(p.items[0]!.event!.recurrence).toEqual([
+    "RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO",
+    "EXDATE:20260330T080000Z,20260413T080000Z,20260518T080000Z",
+    "RDATE:20260414T080000Z",
+  ]);
+  expect(p.items[0]!.clipSeriesEtag).toBe("synthetic-etag");
+});
+it("rejects new outside-window date additions", () => {
+  const { next, target } = fixture();
+  next.items[0]!.event!.recurrence!.push("RDATE:20260519T080000Z");
+  expect(() => preserveClippedSeries(next, source, [target])).toThrow("Clip-Serie");
+});
+it("only PATCHes bounded recurrence changes and metadata, never master times", async () => {
+  const { next, target } = fixture();
+  next.items[0]!.event!.recurrence!.push("EXDATE:20260413T080000Z");
+  const p = preserveClippedSeries(next, source, [target]),
+    g = new FakeGoogle();
+  g.events.set(target.id, target);
+  await syncPlan(p, source, g);
+  expect(g.calls).toHaveLength(1);
+  expect(g.calls[0]!.method).toBe("PATCH");
+  expect(g.calls[0]!.body.start).toBeUndefined();
+  expect(g.calls[0]!.body.end).toBeUndefined();
+  expect(g.calls[0]!.body.recurrence).toEqual([
+    "RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO",
+    "EXDATE:20260413T080000Z",
+  ]);
+  expect(g.calls[0]!.etag).toBe("synthetic-etag");
+});
+it("stops before all writes if approved series ETag has changed", async () => {
+  const { next, target } = fixture();
+  next.items[0]!.event!.recurrence!.push("EXDATE:20260413T080000Z");
+  const p = preserveClippedSeries(next, source, [target]),
+    g = new FakeGoogle();
+  g.events.set(target.id, { ...target, etag: "changed" });
+  await expect(syncPlan(p, source, g)).rejects.toThrow();
+  expect(g.calls).toEqual([]);
+});
+it("extends a clipped tail with bounded RDATEs without extending the original RRULE", () => {
+  const { next, target } = fixture();
+  target.recurrence = ["RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=MO"];
+  const p = preserveClippedSeries(next, source, [target]);
+  expect(p.items[0]!.event!.recurrence).toEqual([
+    "RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=MO",
+    "RDATE:20260420T080000Z,20260427T080000Z,20260504T080000Z,20260511T080000Z",
+  ]);
+});
+it("shortens only in-window instances using EXDATE, keeping original outside occurrences", () => {
+  const { next, target } = fixture();
+  next.items[0]!.event!.recurrence = ["RRULE:FREQ=WEEKLY;COUNT=2;BYDAY=MO"];
+  const p = preserveClippedSeries(next, source, [target]);
+  expect(p.items[0]!.event!.recurrence).toEqual([
+    "RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO",
+    "EXDATE:20260420T080000Z,20260427T080000Z,20260504T080000Z,20260511T080000Z",
+  ]);
+});
+it("does not recreate a series removed after its bounded migration preview", async () => {
+  const { next, target } = fixture();
+  next.items[0]!.event!.recurrence!.push("EXDATE:20260413T080000Z");
+  const p = preserveClippedSeries(next, source, [target]),
+    g = new FakeGoogle();
+  await expect(syncPlan(p, source, g)).rejects.toThrow("nach Vorschau");
+  expect(g.calls).toEqual([]);
+});
+it("treats Google local-TZID exception serialization as unchanged on repeat", async () => {
+  const { next, target } = fixture();
+  next.items[0]!.event!.recurrence!.push(
+    "EXDATE:20260413T080000Z",
+    "RDATE:20260414T080000Z,20260421T080000Z",
+  );
+  target.recurrence!.push(
+    "EXDATE;TZID=Europe/Berlin:20260413T100000",
+    "RDATE;TZID=Europe/Berlin:20260421T100000",
+    "RDATE;TZID=Europe/Berlin:20260414T100000",
+  );
+  const p = preserveClippedSeries(next, source, [target]);
+  expect(p.items[0]!.event!.recurrence).toEqual(target.recurrence);
+  expect(p.items[0]!.clipSeriesEtag).toBeUndefined();
+  expect(p.stats.clipOccurrencesAdded).toBe(0);
+  expect(p.stats.clipOccurrencesCancelled).toBe(0);
+  const g = new FakeGoogle();
+  g.events.set(target.id, target);
+  const result = await syncPlan(p, source, g);
+  expect(result.unchanged).toBe(1);
+  expect(g.calls).toEqual([]);
+});
+
+it("does not validate irrelevant far-future DST occurrences when checking a short clip grid", () => {
+  const { next, target } = fixture();
+  target.start = { dateTime: "2026-03-23T02:30:00+01:00", timeZone: "Europe/Berlin" };
+  target.end = { dateTime: "2026-03-23T03:30:00+01:00", timeZone: "Europe/Berlin" };
+  next.items[0]!.event!.start = {
+    dateTime: "2026-04-06T02:30:00+02:00",
+    timeZone: "Europe/Berlin",
+  };
+  next.items[0]!.event!.end = { dateTime: "2026-04-06T03:30:00+02:00", timeZone: "Europe/Berlin" };
+  expect(preserveClippedSeries(next, source, [target]).stats.normalizedClipSeries).toBe(1);
+});
+
+it("keeps unchanged RDATE-only clip occurrences after the finite RRULE has ended", async () => {
+  const { next, target } = fixture();
+  next.clipWindow = { start: "2041-07-01T00:00:00.000Z", end: "2041-08-01T00:00:00.000Z" };
+  target.recurrence!.push("RDATE:20410708T080000Z");
+  next.items[0]!.event!.recurrence!.push("RDATE:20410708T080000Z");
+  const plan = preserveClippedSeries(next, source, [target]);
+  expect(plan.items[0]!.event!.recurrence).toEqual(target.recurrence);
+  expect(plan.items[0]!.clipSeriesEtag).toBeUndefined();
+  expect(plan.stats.clipOccurrencesAdded).toBe(0);
+  expect(plan.stats.clipOccurrencesCancelled).toBe(0);
+  const google = new FakeGoogle();
+  google.events.set(target.id, target);
+  const result = await syncPlan(plan, source, google);
+  expect(result.unchanged).toBe(1);
+  expect(google.calls).toEqual([]);
+});
+it("reconciles explicit RDATE-only changes inside the clip while preserving outside dates and master times", async () => {
+  const { next, target } = fixture();
+  next.clipWindow = { start: "2041-07-01T00:00:00.000Z", end: "2041-08-01T00:00:00.000Z" };
+  target.recurrence!.push("RDATE:20400901T080000Z,20410708T080000Z");
+  next.items[0]!.event!.recurrence!.push("RDATE:20410709T080000Z");
+  const plan = preserveClippedSeries(next, source, [target]);
+  expect(plan.items[0]!.event!.recurrence).toEqual([
+    "RRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO",
+    "RDATE:20400901T080000Z,20410709T080000Z",
+  ]);
+  expect(plan.stats.clipOccurrencesAdded).toBe(1);
+  expect(plan.stats.clipOccurrencesCancelled).toBe(1);
+  const google = new FakeGoogle();
+  google.events.set(target.id, target);
+  await syncPlan(plan, source, google);
+  expect(google.calls).toHaveLength(1);
+  expect(google.calls[0]!.method).toBe("PATCH");
+  expect(google.calls[0]!.body.start).toBeUndefined();
+  expect(google.calls[0]!.body.end).toBeUndefined();
+});
+it("still stops when no effective clip occurrences remain or RDATEs touch the protected end", () => {
+  for (const value of ["none", "excluded", "boundary"]) {
+    const { next, target } = fixture();
+    next.clipWindow = { start: "2041-07-01T00:00:00.000Z", end: "2041-08-01T00:00:00.000Z" };
+    if (value === "excluded")
+      next.items[0]!.event!.recurrence!.push("RDATE:20410708T080000Z", "EXDATE:20410708T080000Z");
+    if (value === "boundary") {
+      next.clipWindow.end = "2041-08-01T09:00:00.000Z";
+      next.items[0]!.event!.recurrence!.push("RDATE:20410801T080000Z");
+    }
+    expect(() => preserveClippedSeries(next, source, [target])).toThrow("Clip-Serie");
+  }
 });

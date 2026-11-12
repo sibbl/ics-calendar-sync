@@ -1,1 +1,3 @@
-declare module 'safe-regex2' { export default function safeRegex(pattern:string):boolean; }
+declare module "safe-regex2" {
+  export default function safeRegex(pattern: string): boolean;
+}
